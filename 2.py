@@ -32,13 +32,12 @@ class Config:
 class IndicatorWeight:
     """指标权重配置"""
     WEIGHTS = {
-        'MACD': 0.2,  # 长期趋势
+        'MACD': 0.15,  # 长期趋势
         'BBIBOLL': 0.15,  # 中期走势
-        'RSI': 0.15,  # 超买超卖
-        'KDJ': 0.15,  # 短期信号
+        'RSI': 0.2,  # 超买超卖
+        'KDJ': 0.2,  # 短期信号
         'SAR': 0.1,  # 趋势反转
-        'VOL': 0.15,  # 成交量
-        'CHIP': 0.1  # 筹码分布
+        'CHIP': 0.2  # 筹码分布
     }
 
 
@@ -313,11 +312,11 @@ class StockAnalyzer:
         print(f"交易量标准差: {volume_std:.2f}")
 
         if volume_std < (0.5 * volume_mean):
-            print("交易量分布较为均匀。")
-            return "√"
+            print("交易量分布较为均匀，可能存在量化资金的控制。")
+            return "警惕"
         else:
-            print("交易量分布不均匀，可能存在非量化资金的大量交易行为。")
-            return "×"
+            print("交易量分布不均匀。")
+            return "观望"
 
     def analyze_price_fluctuation(self) -> str:
         """分析价格波动"""
@@ -329,10 +328,10 @@ class StockAnalyzer:
 
         if volatility < 0.015:
             print("价格波动较为规律，可能存在量化资金的控制。")
-            return "√"
+            return "警惕"
         else:
-            print("价格波动较大，可能存在非量化资金的大量交易行为。")
-            return "×"
+            print("价格波动较大。")
+            return "观望"
 
     def analyze_market_context(self) -> Dict[str, Any]:
         """分析市场环境"""
@@ -416,20 +415,20 @@ class StockAnalyzer:
 
         # 基于综合得分的建议
         if score >= 0.8:
-            recommendations.append("各项指标表现优异，适合积极建仓")
+            recommendations.append("各项指标表现优异，适合积极建仓（0.8-1.0）")
         elif score >= 0.6:
-            recommendations.append("指标表现良好，可以考虑逐步建仓")
+            recommendations.append("指标表现良好，可以考虑逐步建仓（0.6-0.8）")
         elif score >= 0.4:
-            recommendations.append("指标表现一般，建议观望")
+            recommendations.append("指标表现一般，建议观望（0.4-0.6）")
         else:
-            recommendations.append("指标表现不佳，建议保持谨慎")
+            recommendations.append("指标表现不佳，建议保持谨慎（0.0-0.4）")
 
         # 基于风险评估的建议
         if self.risk_assessment:
             if self.risk_assessment['volatility'] > 0.4:
-                recommendations.append("波动率较高，注意控制仓位")
+                recommendations.append("波动率较高，注意控制仓位（>0.4）")
             if self.risk_assessment['max_drawdown'] < -0.3:
-                recommendations.append("历史最大回撤较大，建议设置止损")
+                recommendations.append("历史最大回撤较大，建议设置止损（<-0.3）")
 
         # 基于市场环境的建议
         if self.market_context:
@@ -504,14 +503,19 @@ class StockAnalyzer:
         print(f"股票代码：{self.code}")
         print(f"股票名称：{self.company_info['股票简称']}")
         print(f"所属行业：{self.company_info['行业']}")
+        print(f"上市时间：{self.company_info['上市时间']}")
+        print(f"发行价格：{self.company_info['发行价']}")
+        print(f"分红次数：{self.company_info['分红次数']}")
+        print(f"机构参与：{self.company_info['机构参与度']}")
+        print(f"市场成本：{self.company_info['市场成本']}")
         print(f"\n当前价格：{self.analysis_results['latest_price']:.2f}")
         print(f"筹码成本：{self.analysis_results['mean_chip']:.2f}")
 
-        print("\n指标评级：")
+        print("------指标评级：------")
         for indicator, value in self.results.items():
             print(f"{indicator}: {value}")
 
-        print(f"\n综合得分：{self.analysis_results['weighted_score']:.2f}")
+        print(f"------综合得分：{self.analysis_results['weighted_score']:.2f}------")
 
         print("\n风险评估：")
         if self.risk_assessment:
@@ -519,18 +523,18 @@ class StockAnalyzer:
             print(f"最大回撤：{self.risk_assessment['max_drawdown']:.2%}")
             print(f"日均成交量：{self.risk_assessment['avg_volume']:.0f}")
 
-        print("\n投资建议：")
+        print("------投资建议：------")
         for recommendation in self.analysis_results['recommendations']:
             print(f"- {recommendation}")
 
-        print("\n==================================")
+        print("==================================")
 
 
 def main():
     """主程序"""
     print("欢迎使用股票分析系统")
     while True:
-        stock_code = input("\n请输入6位股票代码（输入q退出）: ")
+        stock_code = input("请输入6位股票代码（输入q退出）: ")
         if stock_code.lower() == 'q':
             break
 
@@ -542,7 +546,7 @@ def main():
             print(f"分析过程出现错误: {str(e)}")
             continue
 
-    print("\n感谢使用股票分析系统！")
+    print("感谢使用股票分析系统！")
 
 
 if __name__ == "__main__":
