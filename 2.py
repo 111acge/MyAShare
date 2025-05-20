@@ -513,6 +513,7 @@ class StockAnalyzer:
 
         print("------指标评级：------")
         for indicator, value in self.results.items():
+
             print(f"{indicator}: {value}")
 
         print(f"------综合得分：{self.analysis_results['weighted_score']:.2f}------")

@@ -1,11 +1,21 @@
-# config.py
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple, Any
 import pandas as pd
-import numpy as np
 from datetime import datetime, timedelta
 from functools import lru_cache
 import akshare as ak
+
+from sklearn.preprocessing import RobustScaler  # 使用RobustScaler代替MinMaxScaler
+import numpy as np
+
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, Dense, Dropout
+from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.callbacks import EarlyStopping
+from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import mean_squared_error
+from sklearn.model_selection import train_test_split
 
 # 显示设置
 pd.set_option('display.max_columns', None)
@@ -28,2130 +38,1216 @@ class Config:
     SAR_MAX: float = 0.2
     CACHE_HOURS: int = 24
 
-    # 新增配置参数
-    VOLUME_MA_WINDOW: int = 20
-    INDUSTRY_COMPARE_WINDOW: int = 90
-    SENTIMENT_WINDOW: int = 30
-    ESG_UPDATE_DAYS: int = 180
-    MACRO_UPDATE_DAYS: int = 30
 
-
-class FactorWeight:
-    """因子权重配置"""
-
-    # 技术面因子权重
-    TECHNICAL_WEIGHTS = {
-        'MACD': 0.2,  # 长期趋势
-        'BBIBOLL': 0.15,  # 中期走势
-        'RSI': 0.15,  # 超买超卖
-        'KDJ': 0.15,  # 短期信号
-        'SAR': 0.1,  # 趋势反转
-        'VOL': 0.15,  # 成交量
-        'CHIP': 0.1  # 筹码分布
-    }
-
-    # 基本面因子权重
-    FUNDAMENTAL_WEIGHTS = {
-        'PE': 0.15,  # 市盈率
-        'PB': 0.15,  # 市净率
-        'ROE': 0.2,  # 净资产收益率
-        'GROWTH': 0.2,  # 营收增长率
-        'DEBT': 0.15,  # 资产负债率
-        'CASH': 0.15  # 经营性现金流
-    }
-
-    # 资金流向因子权重
-    MONEY_FLOW_WEIGHTS = {
-        'BIG_MONEY': 0.3,  # 大单资金流向
-        'NORTHBOUND': 0.3,  # 北向资金
-        'INSTITUTIONAL': 0.2,  # 机构持股
-        'MARGIN_TRADING': 0.2  # 融资融券
-    }
-
-    # 情绪因子权重
-    SENTIMENT_WEIGHTS = {
-        'IMPLIED_VOL': 0.3,  # 期权隐含波动率
-        'FORUM_SENTIMENT': 0.2,  # 股吧情绪
-        'TOP_TRADERS': 0.3,  # 龙虎榜
-        'SHAREHOLDERS': 0.2  # 股东户数
-    }
-
-    # 行业因子权重
-    INDUSTRY_WEIGHTS = {
-        'PROSPERITY': 0.3,  # 行业景气度
-        'CONCENTRATION': 0.2,  # 行业集中度
-        'POLICY': 0.3,  # 政策敏感度
-        'SUPPLY_CHAIN': 0.2  # 产业链地位
-    }
-
-    # 宏观因子权重
-    MACRO_WEIGHTS = {
-        'GDP': 0.3,  # GDP增速
-        'INFLATION': 0.2,  # 通货膨胀
-        'PMI': 0.3,  # PMI指数
-        'INTEREST_RATE': 0.2  # 利率水平
-    }
-
-    # 创新因子权重
-    INNOVATION_WEIGHTS = {
-        'RD': 0.3,  # 研发投入
-        'PATENT': 0.3,  # 专利
-        'TALENT': 0.2,  # 人才
-        'BUSINESS_MODEL': 0.2  # 商业模式
-    }
-
-    # ESG因子权重
-    ESG_WEIGHTS = {
-        'ENVIRONMENT': 0.4,  # 环境
-        'SOCIAL': 0.3,  # 社会
-        'GOVERNANCE': 0.3  # 治理
-    }
-
-    # 风格因子权重
-    STYLE_WEIGHTS = {
-        'SIZE': 0.25,  # 规模
-        'VALUE': 0.25,  # 价值
-        'MOMENTUM': 0.25,  # 动量
-        'VOLATILITY': 0.25  # 波动
-    }
-
-    # 综合权重
-    OVERALL_WEIGHTS = {
-        'TECHNICAL': 0.2,  # 技术面
-        'FUNDAMENTAL': 0.2,  # 基本面
-        'MONEY_FLOW': 0.1,  # 资金流向
-        'SENTIMENT': 0.1,  # 市场情绪
-        'INDUSTRY': 0.1,  # 行业
-        'MACRO': 0.1,  # 宏观
-        'INNOVATION': 0.1,  # 创新
-        'ESG': 0.05,  # ESG
-        'STYLE': 0.05  # 风格
+class IndicatorWeight:
+    """指标权重配置"""
+    WEIGHTS = {
+        'MACD': 0.10,  # 中期趋势确认，中短期交易中价值适中
+        'BBIBOLL': 0.15,  # 波动区间判断，维持权重
+        'RSI': 0.15,  # 超买超卖，略降低但仍重要
+        'KDJ': 0.20,  # 短期信号，增强权重（5-35日范围内非常有效）
+        'SAR': 0.15,  # 趋势反转，在中短期交易中更为重要
+        'CHIP': 0.10,  # 筹码分布，中短期内重要性略降
+        'ICHIMOKU': 0.10,  # 一目均衡表，对中期趋势判断有帮助
+        'OBV': 0.05,  # 能量潮，辅助判断，权重保持不变
     }
 
 
+# data_fetcher.py
 class DataFetcher:
     """数据获取类"""
 
-    def __init__(self):
-        self.cache = {}
-        self.cache_lifetime = timedelta(hours=Config.CACHE_HOURS)
-
+    @staticmethod
     @lru_cache(maxsize=1024)
-    def get_company_info(self, code: str) -> Dict[str, str]:
+    def get_company_info(code: str) -> Dict[str, str]:
         """获取公司基本信息"""
+        symbol = f"{code}"
+        info_dict = {
+            '股票简称': '未知',
+            '行业': '未知',
+            '上市时间': '未知',
+            '发行价': '暂无数据',
+            '分红次数': 0,
+            '机构参与度': '暂无数据',
+            '市场成本': '暂无数据'
+        }  # 提前初始化默认值
+
         try:
-            # 添加市场标识
-            if code.startswith('6'):
-                symbol = f"{code}.SH"
-            else:
-                symbol = f"{code}.SZ"
+            base_info = ak.stock_individual_info_em(symbol=symbol)
+            # 添加检查，确保数据存在
+            if not base_info.empty and '股票简称' in base_info['item'].values:
+                info_dict['股票简称'] = base_info.loc[base_info['item'] == '股票简称', 'value'].values[0]
+            if not base_info.empty and '行业' in base_info['item'].values:
+                info_dict['行业'] = base_info.loc[base_info['item'] == '行业', 'value'].values[0]
+            if not base_info.empty and '上市时间' in base_info['item'].values:
+                info_dict['上市时间'] = base_info.loc[base_info['item'] == '上市时间', 'value'].values[0]
 
-            info_dict = {}
+            stock_ipo_info_df = ak.stock_ipo_info(stock=symbol)
+            if not stock_ipo_info_df.empty:
+                info_dict['发行价'] = stock_ipo_info_df.loc[stock_ipo_info_df['item'] == '发行价(元)', 'value'].values[
+                    0]
 
-            # 获取基本信息
-            base_info = ak.stock_individual_info_em(symbol=code)
-            info_dict['股票简称'] = base_info.loc[base_info['item'] == '股票简称', 'value'].values[0]
-            info_dict['行业'] = base_info.loc[base_info['item'] == '行业', 'value'].values[0]
-            info_dict['上市时间'] = base_info.loc[base_info['item'] == '上市时间', 'value'].values[0]
+            stock_history_dividend_df = ak.stock_history_dividend()
+            dividend_info = stock_history_dividend_df[stock_history_dividend_df['代码'] == code]
+            info_dict['分红次数'] = dividend_info['分红次数'].iloc[0] if not dividend_info.empty else 0
 
-            # 获取机构持股信息
-            inst_info = ak.stock_institute_hold_detail(symbol=symbol)
-            if not inst_info.empty:
-                total_inst_ratio = inst_info['持股比例'].astype(float).sum()
-                info_dict['机构持股比例'] = f"{total_inst_ratio:.2f}%"
-            else:
-                info_dict['机构持股比例'] = "0.00%"
+            jg_info = ak.stock_comment_detail_zlkp_jgcyd_em(symbol=symbol)
+            info_dict['机构参与度'] = f"{jg_info['机构参与度'].values[0]}%"
 
-            # 获取市值信息
-            quote_info = ak.stock_zh_a_spot_em()
-            stock_info = quote_info[quote_info['代码'] == code].iloc[0]
-            info_dict['总市值'] = f"{float(stock_info['总市值']) / 100000000:.2f}亿"
-            info_dict['流通市值'] = f"{float(stock_info['流通市值']) / 100000000:.2f}亿"
-
-            # 获取财务指标
-            financial_info = ak.stock_financial_analysis_indicator(symbol=code)
-            if not financial_info.empty:
-                latest_data = financial_info.iloc[-1]
-                info_dict['市盈率'] = f"{latest_data.get('市盈率', 0):.2f}"
-                info_dict['市净率'] = f"{latest_data.get('市净率', 0):.2f}"
-                info_dict['营收增长率'] = f"{latest_data.get('营业收入同比增长', 0):.2f}%"
-                info_dict['净利润增长率'] = f"{latest_data.get('净利润同比增长', 0):.2f}%"
-
-            # 获取ESG评级
-            try:
-                esg_info = ak.stock_esg_hz_summary()
-                stock_esg = esg_info[esg_info['股票代码'] == code]
-                if not stock_esg.empty:
-                    info_dict['ESG评级'] = stock_esg['ESG评级'].iloc[0]
-                else:
-                    info_dict['ESG评级'] = "未评级"
-            except:
-                info_dict['ESG评级'] = "未评级"
-
-            # 获取研发投入
-            try:
-                rd_info = ak.stock_research_report_em(symbol=code)
-                if not rd_info.empty:
-                    info_dict['研发投入'] = f"{float(rd_info['研发投入'].iloc[-1]) / 100000000:.2f}亿"
-                else:
-                    info_dict['研发投入'] = "未披露"
-            except:
-                info_dict['研发投入'] = "未披露"
-
-            return info_dict
+            cost_info = ak.stock_comment_detail_scrd_cost_em(symbol=symbol)
+            info_dict['市场成本'] = f"{cost_info['市场成本'].values[0]}元"
 
         except Exception as e:
-            print(f"获取公司信息异常: {str(e)}")
-            return {
-                '股票简称': '未知',
-                '行业': '未知',
-                '上市时间': '未知',
-                '机构持股比例': '0.00%',
-                '总市值': '0.00亿',
-                '流通市值': '0.00亿',
-                '市盈率': '0.00',
-                '市净率': '0.00',
-                '营收增长率': '0.00%',
-                '净利润增长率': '0.00%',
-                'ESG评级': '未评级',
-                '研发投入': '未披露'
-            }
+            print(f"数据获取异常: {str(e)}")
 
+        return info_dict
+
+    @staticmethod
     @lru_cache(maxsize=1024)
-    def get_history_data(self, code: str, days: int = Config.DEFAULT_DAYS) -> pd.DataFrame:
-        """获取历史行情数据"""
-        try:
-            # 计算日期范围
-            end_date = datetime.now().strftime("%Y%m%d")
-            start_date = (datetime.now() - timedelta(days=days)).strftime("%Y%m%d")
+    def get_history_data(code: str, days: int = Config.DEFAULT_DAYS) -> pd.DataFrame:
+        """获取历史数据"""
+        symbol = f"{code}"
+        end_date = datetime.now().strftime("%Y%m%d")
+        start_date = (datetime.now() - timedelta(days)).strftime("%Y%m%d")
 
-            # 获取行情数据
-            df = ak.stock_zh_a_hist(
-                symbol=code,
-                period="daily",
-                start_date=start_date,
-                end_date=end_date,
-                adjust="qfq"
-            )
+        df = ak.stock_zh_a_hist(
+            symbol=symbol,
+            period="daily",
+            start_date=start_date,
+            end_date=end_date,
+            adjust="qfq"
+        )
+        print(f"历史{days}天数据获取完成，共获取{len(df)}条记录")
+        return df
 
-            # 重命名列
-            df.columns = ['日期', '开盘', '收盘', '最高', '最低', '成交量', '成交额', '振幅', '涨跌幅', '涨跌额',
-                          '换手率']
-
-            # 设置日期索引
-            df['日期'] = pd.to_datetime(df['日期'])
-            df.set_index('日期', inplace=True)
-
-            # 确保数据类型正确
-            numeric_columns = ['开盘', '收盘', '最高', '最低', '成交量', '成交额', '振幅', '涨跌幅', '涨跌额', '换手率']
-            for col in numeric_columns:
-                df[col] = pd.to_numeric(df[col], errors='coerce')
-
-            print(f"已获取{len(df)}条历史数据记录")
-            return df
-
-        except Exception as e:
-            print(f"获取历史数据异常: {str(e)}")
-            return pd.DataFrame()
-
+    @staticmethod
     @lru_cache(maxsize=1024)
-    def get_chip_distribution(self, code: str) -> Tuple[Dict[str, float], str, float]:
-        """获取筹码分布数据"""
-        try:
-            # 获取筹码数据
-            df = ak.stock_cyq_em(symbol=code)
-            latest_chip = df.iloc[-1].to_dict()
+    def get_chip_distribution(code: str) -> Tuple[Dict[str, float], str, float]:
+        """获取筹码分布"""
+        symbol = f"{code}"
+        df = ak.stock_cyq_em(symbol=symbol, adjust="qfq")
+        latest_chip = df.iloc[-1].to_dict()
 
-            # 计算套牢比例
-            profit_ratio = latest_chip.get('获利比例', 0)
-            if profit_ratio <= 0.2:
-                keypoint = "√"  # 低套牢率，可能有反弹机会
-            elif 0.2 < profit_ratio <= 0.5:
-                keypoint = "-"  # 中等套牢率
-            else:
-                keypoint = "×"  # 高套牢率，上涨压力大
+        print(f"最新交易日筹码分布：获利比例={latest_chip['获利比例'] * 100:.2f}% "
+              f"70集中度={(latest_chip['70集中度'] * 100):.2f}%")
 
-            # 计算平均成本
-            avg_cost = latest_chip.get('平均成本', 0)
+        if latest_chip['获利比例'] <= 0.2:
+            keypoint = "√"
+        elif 0.15 < latest_chip['获利比例'] <= 0.5:
+            keypoint = "-"
+        else:
+            keypoint = "×"
 
-            # 打印分析信息
-            print(f"最新交易日筹码分布：")
-            print(f"获利比例: {profit_ratio * 100:.2f}%")
-            print(f"平均成本: {avg_cost:.2f}元")
+        return latest_chip, keypoint, latest_chip['平均成本']
 
-            return latest_chip, keypoint, avg_cost
 
-        except Exception as e:
-            print(f"获取筹码分布异常: {str(e)}")
-            return {}, "-", 0.0
-
-    def get_real_time_quotes(self, code: str) -> Dict[str, float]:
-        """获取实时行情数据"""
-        try:
-            # 获取实时行情
-            quote_df = ak.stock_zh_a_spot_em()
-            stock_quote = quote_df[quote_df['代码'] == code].iloc[0]
-
-            quotes = {
-                '最新价': float(stock_quote['最新价']),
-                '涨跌幅': float(stock_quote['涨跌幅']),
-                '成交量': float(stock_quote['成交量']),
-                '成交额': float(stock_quote['成交额']),
-                '换手率': float(stock_quote['换手率']),
-                '振幅': float(stock_quote['振幅'])
-            }
-
-            return quotes
-
-        except Exception as e:
-            print(f"获取实时行情异常: {str(e)}")
-            return {}
-
-    def get_industry_data(self, industry: str) -> pd.DataFrame:
-        """获取行业数据"""
-        try:
-            # 获取行业所有股票
-            industry_stocks = ak.stock_industry_summary_em()
-            industry_stocks = industry_stocks[industry_stocks['行业'] == industry]
-
-            # 获取行业指标
-            industry_data = {
-                '股票数量': len(industry_stocks),
-                '总市值': industry_stocks['总市值'].sum(),
-                '平均市盈率': industry_stocks['市盈率'].mean(),
-                '平均市净率': industry_stocks['市净率'].mean(),
-                '行业涨跌幅': industry_stocks['涨跌幅'].mean()
-            }
-
-            return pd.DataFrame([industry_data])
-
-        except Exception as e:
-            print(f"获取行业数据异常: {str(e)}")
-            return pd.DataFrame()
-
-    def get_market_status(self) -> Dict[str, Any]:
-        """获取市场状态"""
-        try:
-            # 获取大盘指数
-            indices = ak.stock_zh_index_spot()
-
-            # 获取北向资金
-            north_money = ak.stock_hsgt_north_net_flow_em()
-
-            # 获取两市成交额
-            market_volume = ak.stock_market_volume_em()
-
-            market_status = {
-                '上证指数': indices[indices['名称'] == '上证指数']['最新价'].values[0],
-                '深证成指': indices[indices['名称'] == '深证成指']['最新价'].values[0],
-                '北向资金': north_money['值'].sum(),
-                '成交总额': market_volume['两市总成交额'].sum()
-            }
-
-            return market_status
-
-        except Exception as e:
-            print(f"获取市场状态异常: {str(e)}")
-            return {}
-
-
-class FundamentalFactors:
-    """基本面因子分析"""
-
-    def __init__(self):
-        self.data_fetcher = DataFetcher()
-
-    def calculate_pe(self, code: str) -> Tuple[float, str]:
-        """计算市盈率"""
-        try:
-            stock_financial = ak.stock_financial_analysis_indicator(code)
-            latest_pe = stock_financial['总市值/净利润'].iloc[-1]
-            industry_pe = self._get_industry_pe(code)
-
-            if latest_pe < industry_pe * 0.7:
-                return latest_pe, "√"
-            elif latest_pe > industry_pe * 1.3:
-                return latest_pe, "×"
-            else:
-                return latest_pe, "-"
-        except Exception as e:
-            print(f"PE计算异常: {str(e)}")
-            return 0.0, "-"
-
-    def calculate_pb(self, code: str) -> Tuple[float, str]:
-        """计算市净率"""
-        try:
-            stock_financial = ak.stock_financial_analysis_indicator(code)
-            latest_pb = stock_financial['市净率'].iloc[-1]
-            industry_pb = self._get_industry_pb(code)
-
-            if latest_pb < industry_pb * 0.7:
-                return latest_pb, "√"
-            elif latest_pb > industry_pb * 1.3:
-                return latest_pb, "×"
-            else:
-                return latest_pb, "-"
-        except Exception as e:
-            print(f"PB计算异常: {str(e)}")
-            return 0.0, "-"
-
-    def calculate_roe(self, code: str) -> Tuple[float, str]:
-        """计算净资产收益率"""
-        try:
-            stock_financial = ak.stock_financial_analysis_indicator(code)
-            latest_roe = stock_financial['净资产收益率'].iloc[-1]
-            industry_roe = self._get_industry_roe(code)
-
-            if latest_roe > industry_roe * 1.2:
-                return latest_roe, "√"
-            elif latest_roe < industry_roe * 0.8:
-                return latest_roe, "×"
-            else:
-                return latest_roe, "-"
-        except Exception as e:
-            print(f"ROE计算异常: {str(e)}")
-            return 0.0, "-"
-
-    def calculate_growth(self, code: str) -> Tuple[float, str]:
-        """计算营收增长率"""
-        try:
-            stock_financial = ak.stock_financial_analysis_indicator(code)
-            revenue_growth = stock_financial['营业收入同比增长'].iloc[-1]
-            industry_growth = self._get_industry_growth(code)
-
-            if revenue_growth > industry_growth * 1.2:
-                return revenue_growth, "√"
-            elif revenue_growth < industry_growth * 0.8:
-                return revenue_growth, "×"
-            else:
-                return revenue_growth, "-"
-        except Exception as e:
-            print(f"增长率计算异常: {str(e)}")
-            return 0.0, "-"
-
-    def calculate_debt(self, code: str) -> Tuple[float, str]:
-        """计算资产负债率"""
-        try:
-            stock_financial = ak.stock_financial_analysis_indicator(code)
-            debt_ratio = stock_financial['资产负债率'].iloc[-1]
-            industry_debt = self._get_industry_debt(code)
-
-            if debt_ratio < industry_debt * 0.8:
-                return debt_ratio, "√"
-            elif debt_ratio > industry_debt * 1.2:
-                return debt_ratio, "×"
-            else:
-                return debt_ratio, "-"
-        except Exception as e:
-            print(f"负债率计算异常: {str(e)}")
-            return 0.0, "-"
-
-    def calculate_cash_flow(self, code: str) -> Tuple[float, str]:
-        """计算经营性现金流"""
-        try:
-            stock_financial = ak.stock_financial_analysis_indicator(code)
-            operating_cash_flow = stock_financial['经营活动产生的现金流量净额'].iloc[-1]
-            net_profit = stock_financial['净利润'].iloc[-1]
-
-            cash_flow_ratio = operating_cash_flow / net_profit if net_profit != 0 else 0
-
-            if cash_flow_ratio > 1.2:
-                return cash_flow_ratio, "√"
-            elif cash_flow_ratio < 0.8:
-                return cash_flow_ratio, "×"
-            else:
-                return cash_flow_ratio, "-"
-        except Exception as e:
-            print(f"现金流计算异常: {str(e)}")
-            return 0.0, "-"
-
-    def _get_industry_pe(self, code: str) -> float:
-        """获取行业平均市盈率"""
-        try:
-            industry_info = self.data_fetcher.get_company_info(code)
-            industry = industry_info['行业']
-            industry_data = ak.stock_industry_pe_ratio()
-            return industry_data[industry_data['行业'] == industry]['市盈率'].iloc[0]
-        except:
-            return 0.0
-
-    def _get_industry_pb(self, code: str) -> float:
-        """获取行业平均市净率"""
-        try:
-            industry_info = self.data_fetcher.get_company_info(code)
-            industry = industry_info['行业']
-            industry_data = ak.stock_industry_pe_ratio()
-            return industry_data[industry_data['行业'] == industry]['市净率'].iloc[0]
-        except:
-            return 0.0
-
-    def _get_industry_roe(self, code: str) -> float:
-        """获取行业平均净资产收益率"""
-        try:
-            industry_info = self.data_fetcher.get_company_info(code)
-            industry = industry_info['行业']
-            industry_data = ak.stock_industry_pe_ratio()
-            return industry_data[industry_data['行业'] == industry]['净资产收益率'].iloc[0]
-        except:
-            return 0.0
-
-    def _get_industry_growth(self, code: str) -> float:
-        """获取行业平均增长率"""
-        try:
-            industry_info = self.data_fetcher.get_company_info(code)
-            industry = industry_info['行业']
-            industry_data = ak.stock_industry_pe_ratio()
-            return industry_data[industry_data['行业'] == industry]['营收增长率'].iloc[0]
-        except:
-            return 0.0
-
-    def _get_industry_debt(self, code: str) -> float:
-        """获取行业平均负债率"""
-        try:
-            industry_info = self.data_fetcher.get_company_info(code)
-            industry = industry_info['行业']
-            industry_data = ak.stock_industry_pe_ratio()
-            return industry_data[industry_data['行业'] == industry]['资产负债率'].iloc[0]
-        except:
-            return 0.0
-
-
-class MoneyFlowFactors:
-    """资金流向因子分析"""
-
-    def __init__(self):
-        self.data_fetcher = DataFetcher()
-
-    def calculate_big_money_flow(self, code: str) -> Tuple[float, str]:
-        """分析大单资金流向"""
-        try:
-            # 获取最近5日大单资金流向数据
-            money_flow_data = ak.stock_cash_flow_individual_em(symbol=code)
-
-            # 计算主力净流入
-            net_inflow = money_flow_data['主力净流入'].sum()
-            total_amount = money_flow_data['成交额'].sum()
-
-            # 计算主力净流入占比
-            inflow_ratio = net_inflow / total_amount if total_amount != 0 else 0
-
-            if inflow_ratio > 0.1:  # 主力净流入超过10%
-                return inflow_ratio, "√"
-            elif inflow_ratio < -0.1:  # 主力净流出超过10%
-                return inflow_ratio, "×"
-            else:
-                return inflow_ratio, "-"
-
-        except Exception as e:
-            print(f"大单资金流向分析异常: {str(e)}")
-            return 0.0, "-"
-
-    def analyze_northbound_flow(self, code: str) -> Tuple[float, str]:
-        """分析北向资金持股"""
-        try:
-            # 获取北向资金持股数据
-            northbound_data = ak.stock_hsgt_individual_em(symbol=code)
-
-            # 计算最近5日北向资金持股变化
-            recent_changes = northbound_data['持股数量'].diff().tail(5).sum()
-            total_shares = northbound_data['持股数量'].iloc[-1]
-
-            # 计算变化率
-            change_ratio = recent_changes / total_shares if total_shares != 0 else 0
-
-            if change_ratio > 0.02:  # 增持超过2%
-                return change_ratio, "√"
-            elif change_ratio < -0.02:  # 减持超过2%
-                return change_ratio, "×"
-            else:
-                return change_ratio, "-"
-
-        except Exception as e:
-            print(f"北向资金分析异常: {str(e)}")
-            return 0.0, "-"
-
-    def analyze_institutional_holdings(self, code: str) -> Tuple[float, str]:
-        """分析机构持股变动"""
-        try:
-            # 获取机构持股数据
-            institutional_data = ak.stock_report_fund_hold_detail(symbol=code)
-
-            # 计算机构持股比例变化
-            current_ratio = institutional_data['持股数量'].sum() / institutional_data['总股本'].iloc[0]
-            previous_ratio = institutional_data['上期持股数量'].sum() / institutional_data['总股本'].iloc[0]
-
-            # 计算变化幅度
-            change_ratio = (current_ratio - previous_ratio) / previous_ratio if previous_ratio != 0 else 0
-
-            if change_ratio > 0.05:  # 增持超过5%
-                return change_ratio, "√"
-            elif change_ratio < -0.05:  # 减持超过5%
-                return change_ratio, "×"
-            else:
-                return change_ratio, "-"
-
-        except Exception as e:
-            print(f"机构持股分析异常: {str(e)}")
-            return 0.0, "-"
-
-    def analyze_margin_trading(self, code: str) -> Tuple[float, str]:
-        """分析融资融券数据"""
-        try:
-            # 获取融资融券数据
-            margin_data = ak.stock_margin_detail_em(symbol=code)
-
-            # 计算融资融券余额变化
-            recent_changes = margin_data['融资余额'].diff().tail(5).sum()
-            total_amount = margin_data['融资余额'].iloc[-1]
-
-            # 计算变化率
-            change_ratio = recent_changes / total_amount if total_amount != 0 else 0
-
-            if change_ratio > 0.05:  # 融资增加超过5%
-                return change_ratio, "√"
-            elif change_ratio < -0.05:  # 融资减少超过5%
-                return change_ratio, "×"
-            else:
-                return change_ratio, "-"
-
-        except Exception as e:
-            print(f"融资融券分析异常: {str(e)}")
-            return 0.0, "-"
-
-
-class SentimentFactors:
-    """情绪因子分析"""
-
-    def __init__(self):
-        self.data_fetcher = DataFetcher()
-
-    def calculate_implied_volatility(self, code: str) -> Tuple[float, str]:
-        """计算期权隐含波动率"""
-        try:
-            # 获取期权数据
-            option_data = ak.option_50etf_volatility_analysis()
-
-            # 计算隐含波动率
-            current_iv = option_data['已实现波动率'].iloc[-1]
-            historical_mean = option_data['已实现波动率'].mean()
-
-            # 计算波动率偏离度
-            deviation = (current_iv - historical_mean) / historical_mean if historical_mean != 0 else 0
-
-            if deviation < -0.2:  # 波动率显著低于历史均值
-                return deviation, "√"
-            elif deviation > 0.2:  # 波动率显著高于历史均值
-                return deviation, "×"
-            else:
-                return deviation, "-"
-
-        except Exception as e:
-            print(f"隐含波动率计算异常: {str(e)}")
-            return 0.0, "-"
-
-    def analyze_forum_sentiment(self, code: str) -> Tuple[float, str]:
-        """分析股吧情绪"""
-        try:
-            # 获取股吧帖子数据
-            forum_data = ak.stock_guba_em(symbol=code)
-
-            # 简单的情绪分析（可以使用更复杂的NLP模型）
-            positive_words = ['买入', '看多', '上涨', '利好', '突破']
-            negative_words = ['卖出', '看空', '下跌', '利空', '跌破']
-
-            # 计算情绪得分
-            sentiment_score = 0
-            total_posts = len(forum_data)
-
-            for _, post in forum_data.iterrows():
-                title = str(post['标题'])
-                positive_count = sum(1 for word in positive_words if word in title)
-                negative_count = sum(1 for word in negative_words if word in title)
-                sentiment_score += (positive_count - negative_count)
-
-            # 归一化情绪得分
-            normalized_score = sentiment_score / total_posts if total_posts > 0 else 0
-
-            if normalized_score > 0.2:
-                return normalized_score, "√"
-            elif normalized_score < -0.2:
-                return normalized_score, "×"
-            else:
-                return normalized_score, "-"
-
-        except Exception as e:
-            print(f"股吧情绪分析异常: {str(e)}")
-            return 0.0, "-"
-
-    def analyze_top_traders(self, code: str) -> Tuple[float, str]:
-        """分析龙虎榜活跃度"""
-        try:
-            # 获取龙虎榜数据
-            top_traders_data = ak.stock_lhb_detail_em(symbol=code)
-
-            # 计算机构参与度
-            total_records = len(top_traders_data)
-            institution_records = len(top_traders_data[top_traders_data['营业部类型'].str.contains('机构')])
-
-            # 计算机构参与率
-            institution_ratio = institution_records / total_records if total_records > 0 else 0
-
-            if institution_ratio > 0.5:  # 机构参与度高
-                return institution_ratio, "√"
-            elif institution_ratio < 0.2:  # 机构参与度低
-                return institution_ratio, "×"
-            else:
-                return institution_ratio, "-"
-
-        except Exception as e:
-            print(f"龙虎榜分析异常: {str(e)}")
-            return 0.0, "-"
-
-    def analyze_shareholder_changes(self, code: str) -> Tuple[float, str]:
-        """分析股东户数变化"""
-        try:
-            # 获取股东户数数据
-            shareholder_data = ak.stock_holder_num_detail_em(symbol=code)
-
-            # 计算户数变化率
-            current_holders = shareholder_data['股东户数'].iloc[-1]
-            previous_holders = shareholder_data['股东户数'].iloc[-2]
-
-            # 计算变化率
-            change_ratio = (current_holders - previous_holders) / previous_holders if previous_holders != 0 else 0
-
-            if change_ratio < -0.05:  # 户数减少超过5%
-                return change_ratio, "√"
-            elif change_ratio > 0.05:  # 户数增加超过5%
-                return change_ratio, "×"
-            else:
-                return change_ratio, "-"
-
-        except Exception as e:
-            print(f"股东户数分析异常: {str(e)}")
-            return 0.0, "-"
-
-
-class IndustryFactors:
-    """行业因子分析"""
-
-    def __init__(self):
-        self.data_fetcher = DataFetcher()
-
-    def analyze_industry_prosperity(self, code: str) -> Tuple[float, str]:
-        """分析行业景气度"""
-        try:
-            # 获取公司所属行业
-            company_info = self.data_fetcher.get_company_info(code)
-            industry = company_info['行业']
-
-            # 获取行业整体数据
-            industry_data = ak.stock_industry_change_em()
-            industry_info = industry_data[industry_data['板块名称'] == industry].iloc[0]
-
-            # 计算行业景气度指标
-            industry_change = float(industry_info['涨跌幅'].strip('%')) / 100
-            industry_turnover = float(industry_info['换手率'].strip('%')) / 100
-            industry_pe = float(industry_info['市盈率'])
-
-            # 综合评分
-            prosperity_score = (
-                    0.4 * (industry_change + 1) +  # 行业涨跌幅
-                    0.3 * (industry_turnover / 0.1) +  # 换手率（相对于10%基准）
-                    0.3 * (15 / industry_pe if industry_pe > 0 else 0)  # PE估值（相对于15倍PE基准）
-            )
-
-            if prosperity_score > 1.2:
-                return prosperity_score, "√"
-            elif prosperity_score < 0.8:
-                return prosperity_score, "×"
-            else:
-                return prosperity_score, "-"
-
-        except Exception as e:
-            print(f"行业景气度分析异常: {str(e)}")
-            return 0.0, "-"
-
-    def analyze_industry_concentration(self, code: str) -> Tuple[float, str]:
-        """分析行业集中度"""
-        try:
-            # 获取行业所有公司数据
-            company_info = self.data_fetcher.get_company_info(code)
-            industry = company_info['行业']
-            industry_stocks = ak.stock_industry_summary_em()
-            industry_stocks = industry_stocks[industry_stocks['行业'] == industry]
-
-            # 计算公司市值占行业总市值的比例
-            total_market_cap = industry_stocks['总市值'].sum()
-            company_market_cap = industry_stocks[industry_stocks['代码'] == code]['总市值'].iloc[0]
-            market_share = company_market_cap / total_market_cap if total_market_cap > 0 else 0
-
-            # 计算行业集中度（CR4）
-            top_4_share = industry_stocks.nlargest(4, '总市值')['总市值'].sum() / total_market_cap
-
-            # 综合评估公司的行业地位
-            if market_share > 0.1 and top_4_share > 0.6:  # 龙头公司
-                return market_share, "√"
-            elif market_share < 0.01:  # 边缘公司
-                return market_share, "×"
-            else:
-                return market_share, "-"
-
-        except Exception as e:
-            print(f"行业集中度分析异常: {str(e)}")
-            return 0.0, "-"
-
-    def analyze_policy_sensitivity(self, code: str) -> Tuple[float, str]:
-        """分析政策敏感度"""
-        try:
-            # 获取行业政策新闻
-            company_info = self.data_fetcher.get_company_info(code)
-            industry = company_info['行业']
-
-            # 获取行业新闻数据
-            news_data = ak.stock_news_em()
-            industry_news = news_data[news_data['新闻标题'].str.contains(industry, na=False)]
-
-            # 统计政策相关新闻占比
-            policy_keywords = ['政策', '规范', '监管', '发改委', '国务院', '部委']
-            policy_news_count = sum(
-                1 for _, news in industry_news.iterrows()
-                if any(keyword in news['新闻标题'] for keyword in policy_keywords)
-            )
-
-            policy_sensitivity = policy_news_count / len(industry_news) if len(industry_news) > 0 else 0
-
-            if policy_sensitivity < 0.1:  # 政策敏感度低
-                return policy_sensitivity, "√"
-            elif policy_sensitivity > 0.3:  # 政策敏感度高
-                return policy_sensitivity, "×"
-            else:
-                return policy_sensitivity, "-"
-
-        except Exception as e:
-            print(f"政策敏感度分析异常: {str(e)}")
-            return 0.0, "-"
-
-    def analyze_supply_chain(self, code: str) -> Tuple[float, str]:
-        """分析产业链地位"""
-        try:
-            # 获取上下游数据
-            company_info = self.data_fetcher.get_company_info(code)
-            financial_data = ak.stock_financial_analysis_indicator(code)
-
-            # 计算毛利率
-            gross_margin = financial_data['销售毛利率'].iloc[-1]
-
-            # 获取应收账款周转率和存货周转率
-            receivables_turnover = financial_data['应收账款周转率'].iloc[-1]
-            inventory_turnover = financial_data['存货周转率'].iloc[-1]
-
-            # 综合评估产业链地位
-            supply_chain_score = (
-                    0.4 * (gross_margin / 30) +  # 毛利率（相对于30%基准）
-                    0.3 * (receivables_turnover / 4) +  # 应收账款周转（相对于4次/年基准）
-                    0.3 * (inventory_turnover / 4)  # 存货周转（相对于4次/年基准）
-            )
-
-            if supply_chain_score > 1.2:  # 产业链地位强
-                return supply_chain_score, "√"
-            elif supply_chain_score < 0.8:  # 产业链地位弱
-                return supply_chain_score, "×"
-            else:
-                return supply_chain_score, "-"
-
-        except Exception as e:
-            print(f"产业链地位分析异常: {str(e)}")
-            return 0.0, "-"
-
-
-class MacroFactors:
-    """宏观因子分析"""
-
-    def __init__(self):
-        self.data_fetcher = DataFetcher()
-
-    def analyze_gdp_impact(self, code: str) -> Tuple[float, str]:
-        """分析GDP增速影响"""
-        try:
-            # 获取GDP数据
-            gdp_data = ak.macro_china_gdp()
-            latest_gdp_growth = gdp_data['value'].iloc[-1]
-
-            # 获取公司收入增速
-            company_info = self.data_fetcher.get_company_info(code)
-            financial_data = ak.stock_financial_analysis_indicator(code)
-            revenue_growth = financial_data['营业收入同比增长'].iloc[-1]
-
-            # 计算收入增速对GDP增速的敏感度
-            gdp_sensitivity = revenue_growth / latest_gdp_growth if latest_gdp_growth != 0 else 0
-
-            if gdp_sensitivity > 2:  # 高度受益于GDP增长
-                return gdp_sensitivity, "√"
-            elif gdp_sensitivity < 0.5:  # 受GDP影响小
-                return gdp_sensitivity, "×"
-            else:
-                return gdp_sensitivity, "-"
-
-        except Exception as e:
-            print(f"GDP影响分析异常: {str(e)}")
-            return 0.0, "-"
-
-    def analyze_inflation_impact(self, code: str) -> Tuple[float, str]:
-        """分析通货膨胀影响"""
-        try:
-            # 获取CPI数据
-            cpi_data = ak.macro_china_cpi()
-            latest_cpi = cpi_data['value'].iloc[-1]
-
-            # 获取公司毛利率数据
-            financial_data = ak.stock_financial_analysis_indicator(code)
-            gross_margin = financial_data['销售毛利率'].iloc[-1]
-            gross_margin_prev = financial_data['销售毛利率'].iloc[-2]
-
-            # 计算毛利率对CPI的敏感度
-            margin_change = (gross_margin - gross_margin_prev) / gross_margin_prev if gross_margin_prev != 0 else 0
-            inflation_sensitivity = margin_change / (latest_cpi / 100) if latest_cpi != 0 else 0
-
-            if inflation_sensitivity > 0:  # 能够转嫁成本
-                return inflation_sensitivity, "√"
-            elif inflation_sensitivity < -1:  # 成本转嫁能力弱
-                return inflation_sensitivity, "×"
-            else:
-                return inflation_sensitivity, "-"
-
-        except Exception as e:
-            print(f"通胀影响分析异常: {str(e)}")
-            return 0.0, "-"
-
-    def analyze_pmi_impact(self, code: str) -> Tuple[float, str]:
-        """分析PMI影响"""
-        try:
-            # 获取PMI数据
-            pmi_data = ak.macro_china_pmi()
-            latest_pmi = pmi_data['value'].iloc[-1]
-
-            # 获取公司所属行业
-            company_info = self.data_fetcher.get_company_info(code)
-            industry = company_info['行业']
-
-            # 判断行业是否属于制造业
-            manufacturing_industries = ['制造业', '工业', '机械', '电子', '化工']
-            is_manufacturing = any(ind in industry for ind in manufacturing_industries)
-
-            if is_manufacturing:
-                if latest_pmi > 50:  # 制造业景气
-                    return latest_pmi, "√"
-                else:  # 制造业低迷
-                    return latest_pmi, "×"
-            else:
-                return latest_pmi, "-"  # 非制造业
-
-        except Exception as e:
-            print(f"PMI影响分析异常: {str(e)}")
-            return 0.0, "-"
-
-    def analyze_interest_rate_sensitivity(self, code: str) -> Tuple[float, str]:
-        """分析利率敏感度"""
-        try:
-            # 获取LPR数据
-            lpr_data = ak.macro_china_lpr()
-            latest_lpr = lpr_data['value'].iloc[-1]
-
-            # 获取公司资产负债率
-            financial_data = ak.stock_financial_analysis_indicator(code)
-            debt_ratio = financial_data['资产负债率'].iloc[-1]
-
-            # 计算利息保障倍数
-            interest_coverage = financial_data['息税前利润'].iloc[-1] / financial_data['财务费用'].iloc[-1] \
-                if financial_data['财务费用'].iloc[-1] != 0 else float('inf')
-
-            # 综合评估利率敏感度
-            if debt_ratio < 30 or interest_coverage > 5:  # 利率敏感度低
-                return interest_coverage, "√"
-            elif debt_ratio > 60 or interest_coverage < 2:  # 利率敏感度高
-                return interest_coverage, "×"
-            else:
-                return interest_coverage, "-"
-
-        except Exception as e:
-            print(f"利率敏感度分析异常: {str(e)}")
-            return 0.0, "-"
-
-
-class InnovationFactors:
-    """创新因子分析"""
-
-    def __init__(self):
-        self.data_fetcher = DataFetcher()
-
-    def analyze_rd_investment(self, code: str) -> Tuple[float, str]:
-        """分析研发投入"""
-        try:
-            # 获取研发投入数据
-            financial_data = ak.stock_financial_analysis_indicator(code)
-
-            # 计算研发投入占营收比例
-            revenue = financial_data['营业收入'].iloc[-1]
-            rd_expense = financial_data['研发费用'].iloc[-1] if '研发费用' in financial_data.columns else 0
-            rd_ratio = rd_expense / revenue if revenue != 0 else 0
-
-            # 获取行业平均研发投入比例
-            company_info = self.data_fetcher.get_company_info(code)
-            industry = company_info['行业']
-            industry_data = ak.stock_industry_summary_em()
-            industry_stocks = industry_data[industry_data['行业'] == industry]
-
-            # 计算行业平均研发投入比例
-            industry_rd_ratio = industry_stocks[
-                '研发投入占比'].mean() if '研发投入占比' in industry_stocks.columns else 0.03
-
-            if rd_ratio > industry_rd_ratio * 1.5:  # 显著高于行业平均
-                return rd_ratio, "√"
-            elif rd_ratio < industry_rd_ratio * 0.5:  # 显著低于行业平均
-                return rd_ratio, "×"
-            else:
-                return rd_ratio, "-"
-
-        except Exception as e:
-            print(f"研发投入分析异常: {str(e)}")
-            return 0.0, "-"
-
-    def analyze_patents(self, code: str) -> Tuple[float, str]:
-        """分析专利情况"""
-        try:
-            # 获取公司专利数据
-            company_info = self.data_fetcher.get_company_info(code)
-
-            # 获取年报中的专利信息
-            financial_report = ak.stock_financial_report_em(code)
-
-            # 提取专利相关信息（简单示例，实际可能需要更复杂的文本分析）
-            patent_keywords = ['专利', '知识产权', '技术创新']
-            patent_score = 0
-
-            for _, report in financial_report.iterrows():
-                content = str(report['报告内容'])
-                patent_count = sum(content.count(keyword) for keyword in patent_keywords)
-                patent_score += patent_count
-
-            # 获取行业平均专利得分
-            industry = company_info['行业']
-            industry_patent_score = self._get_industry_patent_score(industry)
-
-            if patent_score > industry_patent_score * 1.5:
-                return patent_score, "√"
-            elif patent_score < industry_patent_score * 0.5:
-                return patent_score, "×"
-            else:
-                return patent_score, "-"
-
-        except Exception as e:
-            print(f"专利分析异常: {str(e)}")
-            return 0.0, "-"
-
-    def analyze_talent_density(self, code: str) -> Tuple[float, str]:
-        """分析人才密度"""
-        try:
-            # 获取公司员工信息
-            company_info = self.data_fetcher.get_company_info(code)
-            employee_data = ak.stock_employee_information_em(code)
-
-            # 计算高学历员工占比
-            total_employees = employee_data['员工总数'].iloc[-1]
-            high_edu_employees = employee_data['本科及以上人数'].iloc[-1]
-            talent_ratio = high_edu_employees / total_employees if total_employees > 0 else 0
-
-            # 获取行业平均人才密度
-            industry = company_info['行业']
-            industry_talent_ratio = self._get_industry_talent_ratio(industry)
-
-            if talent_ratio > industry_talent_ratio * 1.3:
-                return talent_ratio, "√"
-            elif talent_ratio < industry_talent_ratio * 0.7:
-                return talent_ratio, "×"
-            else:
-                return talent_ratio, "-"
-
-        except Exception as e:
-            print(f"人才密度分析异常: {str(e)}")
-            return 0.0, "-"
-
-    def analyze_business_model(self, code: str) -> Tuple[float, str]:
-        """分析商业模式创新性"""
-        try:
-            # 获取公司年报信息
-            financial_report = ak.stock_financial_report_em(code)
-
-            # 分析商业模式创新关键词
-            innovation_keywords = [
-                '商业模式', '创新', '转型', '数字化', '智能化',
-                '平台', '生态', '用户体验', '新技术', '新产品'
-            ]
-
-            # 计算创新相关描述的频率
-            innovation_score = 0
-            for _, report in financial_report.iterrows():
-                content = str(report['报告内容'])
-                innovation_count = sum(content.count(keyword) for keyword in innovation_keywords)
-                innovation_score += innovation_count
-
-            # 获取行业平均创新得分
-            company_info = self.data_fetcher.get_company_info(code)
-            industry = company_info['行业']
-            industry_innovation_score = self._get_industry_innovation_score(industry)
-
-            if innovation_score > industry_innovation_score * 1.5:
-                return innovation_score, "√"
-            elif innovation_score < industry_innovation_score * 0.5:
-                return innovation_score, "×"
-            else:
-                return innovation_score, "-"
-
-        except Exception as e:
-            print(f"商业模式创新性分析异常: {str(e)}")
-            return 0.0, "-"
-
-    def _get_industry_patent_score(self, industry: str) -> float:
-        """获取行业平均专利得分"""
-        # 这里可以实现更复杂的行业专利数据获取逻辑
-        industry_scores = {
-            '计算机': 100,
-            '电子': 80,
-            '医药': 70,
-            '机械': 50,
-            '化工': 40,
-            '房地产': 20,
-            '金融': 15
-        }
-        return industry_scores.get(industry, 30)
-
-    def _get_industry_talent_ratio(self, industry: str) -> float:
-        """获取行业平均人才密度"""
-        # 这里可以实现更复杂的行业人才密度数据获取逻辑
-        industry_ratios = {
-            '计算机': 0.8,
-            '电子': 0.7,
-            '医药': 0.6,
-            '金融': 0.5,
-            '机械': 0.4,
-            '化工': 0.3,
-            '房地产': 0.2
-        }
-        return industry_ratios.get(industry, 0.3)
-
-    def _get_industry_innovation_score(self, industry: str) -> float:
-        """获取行业平均创新得分"""
-        # 这里可以实现更复杂的行业创新得分数据获取逻辑
-        industry_scores = {
-            '计算机': 50,
-            '电子': 45,
-            '医药': 40,
-            '机械': 30,
-            '化工': 25,
-            '金融': 20,
-            '房地产': 15
-        }
-        return industry_scores.get(industry, 20)
-
-
-class ESGFactors:
-    """ESG因子分析"""
-
-    def __init__(self):
-        self.data_fetcher = DataFetcher()
-
-    def analyze_environmental_impact(self, code: str) -> Tuple[float, str]:
-        """分析环境影响"""
-        try:
-            # 获取公司ESG评级数据
-            company_info = self.data_fetcher.get_company_info(code)
-            financial_report = ak.stock_financial_report_em(code)
-
-            # 环境相关关键词
-            env_keywords = [
-                '节能', '减排', '环保', '绿色', '可持续',
-                '碳中和', '污染防治', '生态', '清洁能源'
-            ]
-
-            # 计算环境相关描述的频率和投入
-            env_score = 0
-            env_investment = 0
-
-            for _, report in financial_report.iterrows():
-                content = str(report['报告内容'])
-                env_count = sum(content.count(keyword) for keyword in env_keywords)
-                env_score += env_count
-
-                # 提取环保投入金额（实际实现需要更复杂的文本分析）
-                if '环保投入' in content or '环境投入' in content:
-                    # 简单示例，实际需要更准确的提取方法
-                    env_investment += 1
-
-            # 综合评分
-            total_score = (env_score * 0.6 + env_investment * 0.4) / 2
-
-            if total_score > 30:
-                return total_score, "√"
-            elif total_score < 10:
-                return total_score, "×"
-            else:
-                return total_score, "-"
-
-        except Exception as e:
-            print(f"环境影响分析异常: {str(e)}")
-            return 0.0, "-"
-
-    def analyze_social_responsibility(self, code: str) -> Tuple[float, str]:
-        """分析社会责任"""
-        try:
-            # 获取公司社会责任报告
-            financial_report = ak.stock_financial_report_em(code)
-
-            # 社会责任相关关键词
-            social_keywords = [
-                '社会责任', '公益', '扶贫', '就业', '员工福利',
-                '社区发展', '慈善', '教育支持', '医疗援助'
-            ]
-
-            # 计算社会责任相关描述的频率
-            social_score = 0
-            donation_amount = 0
-
-            for _, report in financial_report.iterrows():
-                content = str(report['报告内容'])
-                social_count = sum(content.count(keyword) for keyword in social_keywords)
-                social_score += social_count
-
-                # 提取捐赠金额（实际实现需要更复杂的文本分析）
-                if '捐赠' in content or '公益支出' in content:
-                    # 简单示例，实际需要更准确的提取方法
-                    donation_amount += 1
-
-            # 综合评分
-            total_score = (social_score * 0.7 + donation_amount * 0.3) / 2
-
-            if total_score > 25:
-                return total_score, "√"
-            elif total_score < 8:
-                return total_score, "×"
-            else:
-                return total_score, "-"
-
-        except Exception as e:
-            print(f"社会责任分析异常: {str(e)}")
-            return 0.0, "-"
-
-    def analyze_governance_quality(self, code: str) -> Tuple[float, str]:
-        """分析公司治理"""
-        try:
-            # 获取公司治理相关数据
-            company_info = self.data_fetcher.get_company_info(code)
-            financial_data = ak.stock_financial_analysis_indicator(code)
-
-            # 计算治理相关指标
-            # 1. 董事会独立性
-            board_data = ak.stock_board_information_em(code)
-            independent_directors = board_data['独立董事人数'].iloc[-1] if '独立董事人数' in board_data.columns else 0
-            total_directors = board_data['董事会人数'].iloc[-1] if '董事会人数' in board_data.columns else 1
-            independence_ratio = independent_directors / total_directors if total_directors > 0 else 0
-
-            # 2. 股权集中度
-            ownership_data = ak.stock_main_stock_holder(code)
-            top_holder_ratio = float(
-                ownership_data['持股比例'].iloc[0].strip('%')) / 100 if not ownership_data.empty else 1
-
-            # 3. 信息披露质量
-            disclosure_score = self._analyze_disclosure_quality(code)
-
-            # 综合评分
-            governance_score = (
-                    0.4 * (1 - top_holder_ratio) +  # 股权分散度
-                    0.3 * independence_ratio +  # 董事会独立性
-                    0.3 * disclosure_score  # 信息披露质量
-            )
-
-            if governance_score > 0.7:
-                return governance_score, "√"
-            elif governance_score < 0.4:
-                return governance_score, "×"
-            else:
-                return governance_score, "-"
-
-        except Exception as e:
-            print(f"公司治理分析异常: {str(e)}")
-            return 0.0, "-"
-
-    def _analyze_disclosure_quality(self, code: str) -> float:
-        """分析信息披露质量"""
-        try:
-            # 获取公司公告数据
-            announcements = ak.stock_announcement_em(code)
-
-            # 计算年度公告数量
-            annual_count = len(announcements)
-
-            # 设定基准值
-            benchmark = 50  # 假设年度合理公告数量为50个
-
-            # 计算得分
-            if annual_count > benchmark * 1.5:  # 过度披露
-                score = 0.6
-            elif annual_count < benchmark * 0.5:  # 披露不足
-                score = 0.3
-            else:  # 适度披露
-                score = 0.8
-
-            return score
-        except:
-            return 0.5  # 默认中等水平
-
-
-class StyleFactors:
-    """风格因子分析"""
-
-    def __init__(self):
-        self.data_fetcher = DataFetcher()
-
-    def analyze_size_factor(self, code: str) -> Tuple[float, str]:
-        """分析规模因子"""
-        try:
-            # 获取市值数据
-            stock_info = ak.stock_individual_info_em(symbol=code)
-            market_cap = float(stock_info.loc[stock_info['item'] == '总市值', 'value'].values[0])
-
-            # 获取行业市值分布
-            company_info = self.data_fetcher.get_company_info(code)
-            industry = company_info['行业']
-            industry_data = ak.stock_industry_summary_em()
-            industry_stocks = industry_data[industry_data['行业'] == industry]
-
-            # 计算市值分位数
-            industry_caps = industry_stocks['总市值'].astype(float)
-            percentile = sum(market_cap >= cap for cap in industry_caps) / len(industry_caps)
-
-            if percentile > 0.8:  # 大市值
-                return percentile, "√"
-            elif percentile < 0.2:  # 小市值
-                return percentile, "×"
-            else:
-                return percentile, "-"
-
-        except Exception as e:
-            print(f"规模因子分析异常: {str(e)}")
-            return 0.0, "-"
-
-    def analyze_value_factor(self, code: str) -> Tuple[float, str]:
-        """分析价值因子"""
-        try:
-            # 获取估值指标
-            financial_data = ak.stock_financial_analysis_indicator(code)
-
-            # 计算综合价值分数
-            pe = financial_data['市盈率'].iloc[-1]
-            pb = financial_data['市净率'].iloc[-1]
-            ps = financial_data['市销率'].iloc[-1]
-
-            # 获取行业平均水平
-            company_info = self.data_fetcher.get_company_info(code)
-            industry = company_info['行业']
-            industry_avg = self._get_industry_valuation(industry)
-
-            # 计算相对估值水平
-            relative_pe = pe / industry_avg['pe'] if industry_avg['pe'] != 0 else 1
-            relative_pb = pb / industry_avg['pb'] if industry_avg['pb'] != 0 else 1
-            relative_ps = ps / industry_avg['ps'] if industry_avg['ps'] != 0 else 1
-
-            # 综合评分
-            value_score = (1 / relative_pe + 1 / relative_pb + 1 / relative_ps) / 3
-
-            if value_score > 1.2:  # 低估
-                return value_score, "√"
-            elif value_score < 0.8:  # 高估
-                return value_score, "×"
-            else:
-                return value_score, "-"
-
-        except Exception as e:
-            print(f"价值因子分析异常: {str(e)}")
-            return 0.0, "-"
-
-    def analyze_momentum_factor(self, code: str) -> Tuple[float, str]:
-        """分析动量因子"""
-        try:
-            # 获取历史价格数据
-            stock_data = self.data_fetcher.get_history_data(code)
-
-            # 计算不同期限收益率
-            returns = {
-                'monthly': stock_data['收盘'].pct_change(20).iloc[-1],
-                'quarterly': stock_data['收盘'].pct_change(60).iloc[-1],
-                'semiannual': stock_data['收盘'].pct_change(120).iloc[-1]
-            }
-
-            # 计算动量得分
-            momentum_score = (
-                    0.5 * returns['monthly'] +
-                    0.3 * returns['quarterly'] +
-                    0.2 * returns['semiannual']
-            )
-
-            if momentum_score > 0.1:  # 强势动量
-                return momentum_score, "√"
-            elif momentum_score < -0.1:  # 弱势动量
-                return momentum_score, "×"
-            else:
-                return momentum_score, "-"
-
-        except Exception as e:
-            print(f"动量因子分析异常: {str(e)}")
-            return 0.0, "-"
-
-    def analyze_volatility_factor(self, code: str) -> Tuple[float, str]:
-        """分析波动因子"""
-        try:
-            # 获取历史价格数据
-            stock_data = self.data_fetcher.get_history_data(code)
-
-            # 计算波动率指标
-            returns = stock_data['收盘'].pct_change().dropna()
-            volatility = returns.std() * np.sqrt(252)  # 年化波动率
-
-            # 获取行业波动率
-            company_info = self.data_fetcher.get_company_info(code)
-            industry = company_info['行业']
-            industry_volatility = self._get_industry_volatility(industry)
-
-            # 计算相对波动率
-            relative_volatility = volatility / industry_volatility if industry_volatility != 0 else 1
-
-            if relative_volatility < 0.8:  # 低波动
-                return relative_volatility, "√"
-            elif relative_volatility > 1.2:  # 高波动
-                return relative_volatility, "×"
-            else:
-                return relative_volatility, "-"
-
-        except Exception as e:
-            print(f"波动因子分析异常: {str(e)}")
-            return 0.0, "-"
-
-    def _get_industry_valuation(self, industry: str) -> Dict[str, float]:
-        """获取行业平均估值水平"""
-        industry_vals = {
-            '计算机': {'pe': 35, 'pb': 3.5, 'ps': 2.5},
-            '医药': {'pe': 40, 'pb': 4.0, 'ps': 3.0},
-            '消费': {'pe': 30, 'pb': 3.0, 'ps': 2.0},
-            '金融': {'pe': 10, 'pb': 1.2, 'ps': 3.0},
-            '地产': {'pe': 12, 'pb': 1.5, 'ps': 2.0},
-            '工业': {'pe': 20, 'pb': 2.0, 'ps': 1.5}
-        }
-        return industry_vals.get(industry, {'pe': 25, 'pb': 2.5, 'ps': 2.0})
-
-    def _get_industry_volatility(self, industry: str) -> float:
-        """获取行业平均波动率"""
-        industry_volatility = {
-            '计算机': 0.35,
-            '医药': 0.30,
-            '消费': 0.25,
-            '金融': 0.20,
-            '地产': 0.28,
-            '工业': 0.26
-        }
-        return industry_volatility.get(industry, 0.28)
-
-
+# technical_indicators.py
 class TechnicalIndicators:
     """技术指标计算类"""
 
     @staticmethod
     def calculate_bbiboll(df: pd.DataFrame) -> Tuple[Dict[str, float], str, float]:
         """计算BBIBOLL指标"""
-        try:
-            df = df.copy()
+        df['MA3'] = df['收盘'].rolling(3).mean()
+        df['MA6'] = df['收盘'].rolling(6).mean()
+        df['MA12'] = df['收盘'].rolling(12).mean()
+        df['MA24'] = df['收盘'].rolling(24).mean()
+        df['BBIBOLL'] = (df['MA3'] + df['MA6'] + df['MA12'] + df['MA24']) / 4
+        df['UPPER'] = df['BBIBOLL'] + 2 * df['BBIBOLL'].rolling(Config.BBIBOLL_WINDOW).std()
+        df['LOWER'] = df['BBIBOLL'] - 2 * df['BBIBOLL'].rolling(Config.BBIBOLL_WINDOW).std()
 
-            # 计算多个移动平均线
-            df['MA3'] = df['收盘'].rolling(3).mean()
-            df['MA6'] = df['收盘'].rolling(6).mean()
-            df['MA12'] = df['收盘'].rolling(12).mean()
-            df['MA24'] = df['收盘'].rolling(24).mean()
+        latest = df.iloc[-1]
+        latest_price = latest['收盘']
 
-            # 计算BBIBOLL
-            df['BBIBOLL'] = (df['MA3'] + df['MA6'] + df['MA12'] + df['MA24']) / 4
+        bbiboll_data = {
+            'BBIBOLL': latest['BBIBOLL'],
+            'UPPER': latest['UPPER'],
+            'LOWER': latest['LOWER'],
+            'latest_price': latest_price
+        }
 
-            # 计算标准差
-            df['BBIBOLL_STD'] = df['BBIBOLL'].rolling(Config.BBIBOLL_WINDOW).std()
+        if latest_price > bbiboll_data['UPPER']:
+            keypoint = "×"
+        elif latest_price < bbiboll_data['LOWER']:
+            keypoint = "√"
+        else:
+            keypoint = "-"
 
-            # 计算上下轨
-            df['UPPER'] = df['BBIBOLL'] + 2 * df['BBIBOLL_STD']
-            df['LOWER'] = df['BBIBOLL'] - 2 * df['BBIBOLL_STD']
-
-            # 获取最新数据
-            latest = df.iloc[-1]
-            latest_price = latest['收盘']
-
-            bbiboll_data = {
-                'BBIBOLL': latest['BBIBOLL'],
-                'UPPER': latest['UPPER'],
-                'LOWER': latest['LOWER'],
-                'latest_price': latest_price
-            }
-
-            # 生成评级
-            if latest_price > latest['UPPER']:
-                keypoint = "×"  # 超买
-            elif latest_price < latest['LOWER']:
-                keypoint = "√"  # 超卖
-            else:
-                keypoint = "-"  # 盘整
-
-            return bbiboll_data, keypoint, latest_price
-
-        except Exception as e:
-            print(f"BBIBOLL计算异常: {str(e)}")
-            return {}, "-", 0.0
+        return bbiboll_data, keypoint, latest_price
 
     @staticmethod
     def calculate_rsi(df: pd.DataFrame) -> Tuple[pd.DataFrame, str]:
         """计算RSI指标"""
-        try:
-            df = df.copy()
+        delta = df['收盘'].diff()
+        gain = delta.where(delta > 0, 0)
+        loss = -delta.where(delta < 0, 0)
 
-            # 计算价格变化
-            delta = df['收盘'].diff()
+        avg_gain = gain.rolling(window=Config.RSI_WINDOW).mean()
+        avg_loss = loss.rolling(window=Config.RSI_WINDOW).mean()
 
-            # 分离上涨和下跌
-            gain = (delta.where(delta > 0, 0)).fillna(0)
-            loss = (-delta.where(delta < 0, 0)).fillna(0)
+        rs = avg_gain / avg_loss
+        df['RSI'] = 100 - (100 / (1 + rs))
 
-            # 计算平均涨跌幅
-            avg_gain = gain.rolling(window=Config.RSI_WINDOW).mean()
-            avg_loss = loss.rolling(window=Config.RSI_WINDOW).mean()
+        latest_rsi = df['RSI'].iloc[-1]
 
-            # 计算相对强弱指标
-            rs = avg_gain / avg_loss
-            df['RSI'] = 100 - (100 / (1 + rs))
+        if latest_rsi > 70:
+            keypoint = "×"
+        elif latest_rsi < 30:
+            keypoint = "√"
+        else:
+            keypoint = "-"
 
-            # 获取最新RSI值
-            latest_rsi = df['RSI'].iloc[-1]
-
-            # 生成评级
-            if latest_rsi > 70:
-                keypoint = "×"  # 超买
-            elif latest_rsi < 30:
-                keypoint = "√"  # 超卖
-            else:
-                keypoint = "-"  # 盘整
-
-            return df, keypoint
-
-        except Exception as e:
-            print(f"RSI计算异常: {str(e)}")
-            return df, "-"
+        return df, keypoint
 
     @staticmethod
     def calculate_macd(df: pd.DataFrame) -> Tuple[pd.DataFrame, str]:
         """计算MACD指标"""
-        try:
-            df = df.copy()
+        df['EMA_short'] = df['收盘'].ewm(span=Config.MACD_SHORT_WINDOW, adjust=False).mean()
+        df['EMA_long'] = df['收盘'].ewm(span=Config.MACD_LONG_WINDOW, adjust=False).mean()
+        df['DIF'] = df['EMA_short'] - df['EMA_long']
+        df['DEA'] = df['DIF'].ewm(span=Config.MACD_SIGNAL_WINDOW, adjust=False).mean()
+        df['MACD'] = df['DIF'] - df['DEA']
 
-            # 计算快速和慢速EMA
-            df['EMA_short'] = df['收盘'].ewm(span=Config.MACD_SHORT_WINDOW, adjust=False).mean()
-            df['EMA_long'] = df['收盘'].ewm(span=Config.MACD_LONG_WINDOW, adjust=False).mean()
+        latest_dif = df['DIF'].iloc[-1]
+        latest_dea = df['DEA'].iloc[-1]
 
-            # 计算DIF
-            df['DIF'] = df['EMA_short'] - df['EMA_long']
-
-            # 计算DEA
-            df['DEA'] = df['DIF'].ewm(span=Config.MACD_SIGNAL_WINDOW, adjust=False).mean()
-
-            # 计算MACD
-            df['MACD'] = 2 * (df['DIF'] - df['DEA'])
-
-            # 获取最新值
-            latest_dif = df['DIF'].iloc[-1]
-            latest_dea = df['DEA'].iloc[-1]
-
-            # 生成评级
-            if latest_dif > latest_dea:
-                keypoint = "√"  # 多头
-            else:
-                keypoint = "×"  # 空头
-
-            return df, keypoint
-
-        except Exception as e:
-            print(f"MACD计算异常: {str(e)}")
-            return df, "-"
+        keypoint = "√" if latest_dif > latest_dea else "×"
+        return df, keypoint
 
     @staticmethod
     def calculate_kdj(df: pd.DataFrame) -> Tuple[pd.DataFrame, str]:
         """计算KDJ指标"""
-        try:
-            df = df.copy()
+        df['RSV'] = ((df['收盘'] - df['最低'].rolling(Config.KDJ_WINDOW).min()) /
+                     (df['最高'].rolling(Config.KDJ_WINDOW).max() -
+                      df['最低'].rolling(Config.KDJ_WINDOW).min())) * 100
 
-            # 计算RSV
-            low_list = df['最低'].rolling(window=Config.KDJ_WINDOW, min_periods=1).min()
-            high_list = df['最高'].rolling(window=Config.KDJ_WINDOW, min_periods=1).max()
+        df['RSV'] = df['RSV'].replace([np.inf, -np.inf], np.nan).fillna(0)
+        df['K'] = 50.0
+        df['D'] = 50.0
 
-            rsv = (df['收盘'] - low_list) / (high_list - low_list) * 100
+        for i in range(1, len(df)):
+            df.loc[df.index[i], 'K'] = (2 / 3) * df.loc[df.index[i - 1], 'K'] + (1 / 3) * df.loc[df.index[i], 'RSV']
+            df.loc[df.index[i], 'D'] = (2 / 3) * df.loc[df.index[i - 1], 'D'] + (1 / 3) * df.loc[df.index[i], 'K']
 
-            # 计算K值
-            df['K'] = rsv.ewm(com=2, adjust=False).mean()
+        df['J'] = 3 * df['K'] - 2 * df['D']
 
-            # 计算D值
-            df['D'] = df['K'].ewm(com=2, adjust=False).mean()
+        latest_k = df['K'].iloc[-1]
+        latest_d = df['D'].iloc[-1]
 
-            # 计算J值
-            df['J'] = 3 * df['K'] - 2 * df['D']
+        if latest_k > latest_d and latest_k < 20:
+            keypoint = "√"
+        elif latest_k < latest_d and latest_k > 80:
+            keypoint = "×"
+        else:
+            keypoint = "-"
 
-            # 获取最新值
-            latest_k = df['K'].iloc[-1]
-            latest_d = df['D'].iloc[-1]
-
-            # 生成评级
-            if latest_k > latest_d and latest_k < 20:
-                keypoint = "√"  # 超卖反转
-            elif latest_k < latest_d and latest_k > 80:
-                keypoint = "×"  # 超买反转
-            else:
-                keypoint = "-"  # 盘整
-
-            return df, keypoint
-
-        except Exception as e:
-            print(f"KDJ计算异常: {str(e)}")
-            return df, "-"
+        return df, keypoint
 
     @staticmethod
     def calculate_sar(df: pd.DataFrame) -> Tuple[pd.DataFrame, str]:
-        """计算SAR指标（抛物线指标）"""
-        try:
-            df = df.copy()
+        """计算SAR指标"""
+        df['SAR'] = 0.0
+        df['trend'] = 0
 
-            # 初始化SAR列
-            df['SAR'] = 0.0
-            df['SAR_trend'] = 0
+        trend = 1
+        af = Config.SAR_STEP
+        ep = df['最高'].iloc[0]
+        sar = df['最低'].iloc[0]
 
-            # 设置初始值
-            trend = 1  # 1为上涨趋势，-1为下跌趋势
-            af = Config.SAR_STEP  # 加速因子
-            ep = df['最高'].iloc[0]  # 极值点
-            sar = df['最低'].iloc[0]  # SAR初始值
+        for i in range(1, len(df)):
+            prev_sar = sar
 
-            # 逐日计算SAR
-            for i in range(1, len(df)):
-                prev_sar = sar
+            if trend == 1:
+                sar = prev_sar + af * (ep - prev_sar)
+                sar = min(sar, df['最低'].iloc[max(0, i - 2):i].min())
 
-                if trend == 1:  # 上涨趋势
-                    # 更新SAR值
-                    sar = prev_sar + af * (ep - prev_sar)
-                    # 限制SAR不高于前两天的最低价
-                    sar = min(sar, df['最低'].iloc[max(0, i - 2):i].min())
-
-                    # 检查趋势是否改变
-                    if sar > df['最低'].iloc[i]:
-                        trend = -1
-                        sar = ep
-                        ep = df['最低'].iloc[i]
-                        af = Config.SAR_STEP
-                    else:
-                        if df['最高'].iloc[i] > ep:
-                            ep = df['最高'].iloc[i]
-                            af = min(af + Config.SAR_STEP, Config.SAR_MAX)
-
-                else:  # 下跌趋势
-                    # 更新SAR值
-                    sar = prev_sar - af * (prev_sar - ep)
-                    # 限制SAR不低于前两天的最高价
-                    sar = max(sar, df['最高'].iloc[max(0, i - 2):i].max())
-
-                    # 检查趋势是否改变
-                    if sar < df['最高'].iloc[i]:
-                        trend = 1
-                        sar = ep
+                if sar > df['最低'].iloc[i]:
+                    trend = -1
+                    sar = ep
+                    ep = df['最低'].iloc[i]
+                    af = Config.SAR_STEP
+                else:
+                    if df['最高'].iloc[i] > ep:
                         ep = df['最高'].iloc[i]
-                        af = Config.SAR_STEP
-                    else:
-                        if df['最低'].iloc[i] < ep:
-                            ep = df['最低'].iloc[i]
-                            af = min(af + Config.SAR_STEP, Config.SAR_MAX)
-
-                df.loc[df.index[i], 'SAR'] = sar
-                df.loc[df.index[i], 'SAR_trend'] = trend
-
-            # 获取最新值
-            latest = df.iloc[-1]
-            latest_trend = latest['SAR_trend']
-            latest_sar = latest['SAR']
-            latest_price = latest['收盘']
-
-            # 生成评级
-            if latest_trend == 1 and latest_price > latest_sar:
-                keypoint = "√"  # 上涨趋势
-            elif latest_trend == -1 and latest_price < latest_sar:
-                keypoint = "×"  # 下跌趋势
+                        af = min(af + Config.SAR_STEP, Config.SAR_MAX)
             else:
-                keypoint = "-"  # 趋势转换中
+                sar = prev_sar - af * (prev_sar - ep)
+                sar = max(sar, df['最高'].iloc[max(0, i - 2):i].max())
 
-            return df, keypoint
+                if sar < df['最高'].iloc[i]:
+                    trend = 1
+                    sar = ep
+                    ep = df['最高'].iloc[i]
+                    af = Config.SAR_STEP
+                else:
+                    if df['最低'].iloc[i] < ep:
+                        ep = df['最低'].iloc[i]
+                        af = min(af + Config.SAR_STEP, Config.SAR_MAX)
 
-        except Exception as e:
-            print(f"SAR计算异常: {str(e)}")
-            return df, "-"
+            df.loc[df.index[i], 'SAR'] = sar
+            df.loc[df.index[i], 'trend'] = trend
+
+        latest_trend = df['trend'].iloc[-1]
+        latest_sar = df['SAR'].iloc[-1]
+        latest_price = df['收盘'].iloc[-1]
+
+        if latest_trend == 1 and latest_price > latest_sar:
+            keypoint = "√"
+        elif latest_trend == -1 and latest_price < latest_sar:
+            keypoint = "×"
+        else:
+            keypoint = "-"
+
+        return df, keypoint
+
+
+# 添加高级技术指标计算类
+class AdvancedTechnicalIndicators(TechnicalIndicators):
+    """高级技术指标计算类"""
 
     @staticmethod
-    def calculate_volume_analysis(df: pd.DataFrame) -> Tuple[Dict[str, float], str]:
-        """分析成交量"""
-        try:
-            df = df.copy()
+    def calculate_ichimoku(df: pd.DataFrame) -> Tuple[pd.DataFrame, str]:
+        """计算一目均衡表"""
+        # 转换线 (Conversion Line)
+        df['转换线'] = (df['最高'].rolling(window=9).max() + df['最低'].rolling(window=9).min()) / 2
 
-            # 计算成交量移动平均
-            df['VOL_MA5'] = df['成交量'].rolling(window=5).mean()
-            df['VOL_MA10'] = df['成交量'].rolling(window=10).mean()
+        # 基准线 (Base Line)
+        df['基准线'] = (df['最高'].rolling(window=26).max() + df['最低'].rolling(window=26).min()) / 2
 
-            # 计算量比
-            latest_volume = df['成交量'].iloc[-1]
-            avg_volume = df['成交量'].rolling(window=5).mean().iloc[-1]
-            volume_ratio = latest_volume / avg_volume if avg_volume != 0 else 1
+        # 先行带1 (Leading Span A)
+        df['先行带A'] = ((df['转换线'] + df['基准线']) / 2).shift(26)
 
-            # 计算量价背离
-            price_trend = df['收盘'].iloc[-1] > df['收盘'].iloc[-5]  # 价格是否上涨
-            volume_trend = latest_volume > avg_volume  # 成交量是否放大
+        # 先行带2 (Leading Span B)
+        df['先行带B'] = ((df['最高'].rolling(window=52).max() + df['最低'].rolling(window=52).min()) / 2).shift(26)
 
-            # 生成评级
-            if price_trend and volume_trend:
-                keypoint = "√"  # 量价齐升
-            elif not price_trend and volume_trend:
-                keypoint = "×"  # 放量下跌
+        # 延迟线 (Lagging Span)
+        df['延迟线'] = df['收盘'].shift(-26)
+
+        # 判断信号
+        latest = df.iloc[-1]
+        if (latest['收盘'] > latest['先行带A'] and latest['收盘'] > latest['先行带B']):
+            keypoint = "√"
+        elif (latest['收盘'] < latest['先行带A'] and latest['收盘'] < latest['先行带B']):
+            keypoint = "×"
+        else:
+            keypoint = "-"
+
+        return df, keypoint
+
+    @staticmethod
+    def calculate_obv(df: pd.DataFrame) -> Tuple[pd.DataFrame, str]:
+        """计算OBV(能量潮)指标"""
+        df['OBV'] = 0
+        df.loc[0, 'OBV'] = df.loc[0, '成交量']
+
+        for i in range(1, len(df)):
+            if df.loc[df.index[i], '收盘'] > df.loc[df.index[i - 1], '收盘']:
+                df.loc[df.index[i], 'OBV'] = df.loc[df.index[i - 1], 'OBV'] + df.loc[df.index[i], '成交量']
+            elif df.loc[df.index[i], '收盘'] < df.loc[df.index[i - 1], '收盘']:
+                df.loc[df.index[i], 'OBV'] = df.loc[df.index[i - 1], 'OBV'] - df.loc[df.index[i], '成交量']
             else:
-                keypoint = "-"  # 量价平稳
+                df.loc[df.index[i], 'OBV'] = df.loc[df.index[i - 1], 'OBV']
 
-            volume_data = {
-                'latest_volume': latest_volume,
-                'volume_ratio': volume_ratio,
-                'ma5_volume': df['VOL_MA5'].iloc[-1],
-                'ma10_volume': df['VOL_MA10'].iloc[-1]
-            }
+        # 计算OBV的移动平均线
+        df['OBV_MA'] = df['OBV'].rolling(window=10).mean()
 
-            return volume_data, keypoint
+        # 判断信号
+        if df['OBV'].iloc[-1] > df['OBV_MA'].iloc[-1] and df['OBV'].iloc[-2] <= df['OBV_MA'].iloc[-2]:
+            keypoint = "√"
+        elif df['OBV'].iloc[-1] < df['OBV_MA'].iloc[-1] and df['OBV'].iloc[-2] >= df['OBV_MA'].iloc[-2]:
+            keypoint = "×"
+        else:
+            keypoint = "-"
+
+        return df, keypoint
+
+    @staticmethod
+    def calculate_liquidity_indicators(df: pd.DataFrame) -> Dict[str, float]:
+        """计算流动性指标"""
+        # 计算成交量加权平均价格 (VWAP)
+        df['VWAP'] = (df['成交量'] * df['收盘']).cumsum() / df['成交量'].cumsum()
+
+        # 计算Amihud非流动性指标
+        df['daily_return'] = df['收盘'].pct_change().abs()
+        df['amihud'] = df['daily_return'] / (df['成交量'] * df['收盘'])
+
+        # 计算买卖价差估计
+        df['price_range'] = (df['最高'] - df['最低']) / df['收盘']
+
+        liquidity_metrics = {
+            'vwap': df['VWAP'].iloc[-1],
+            'amihud': df['amihud'].iloc[-10:].mean(),  # 最近10天的平均值
+            'price_range': df['price_range'].iloc[-10:].mean()
+        }
+
+        return liquidity_metrics
+
+
+# 添加宏观经济数据获取类
+class MacroDataFetcher:
+    """宏观经济数据获取类"""
+
+    @staticmethod
+    @lru_cache(maxsize=128)
+    def get_economic_indicators() -> Dict[str, float]:
+        """获取宏观经济指标"""
+        result = {}  # 初始化空结果
+        try:
+            # 获取GDP数据
+            gdp_data = ak.macro_china_gdp()
+            if not gdp_data.empty and 'GDP累计同比' in gdp_data.columns:
+                result['gdp_yoy'] = float(gdp_data['GDP累计同比'].iloc[-1])
+            else:
+                result['gdp_yoy'] = 0.0
+
+            # 获取CPI数据
+            cpi_data = ak.macro_china_cpi_yearly()
+            if not cpi_data.empty and '同比' in cpi_data.columns:
+                result['cpi'] = float(cpi_data['同比'].iloc[-1])
+            else:
+                result['cpi'] = 0.0
+
+            # 获取货币供应量
+            money_supply = ak.macro_china_money_supply()
+            if not money_supply.empty and '指标' in money_supply.columns and '数值' in money_supply.columns:
+                m2_data = money_supply[money_supply['指标'] == 'M2同比']
+                if not m2_data.empty:
+                    result['m2_yoy'] = float(m2_data.iloc[-1]['数值'])
+                else:
+                    result['m2_yoy'] = 0.0
+            else:
+                result['m2_yoy'] = 0.0
+
+            # 获取社会融资规模
+            social_finance = ak.macro_china_shrzgm()
+            if not social_finance.empty and '当月同比' in social_finance.columns:
+                result['social_finance_yoy'] = float(social_finance['当月同比'].iloc[-1])
+            else:
+                result['social_finance_yoy'] = 0.0
 
         except Exception as e:
-            print(f"成交量分析异常: {str(e)}")
-            return {}, "-"
+            print(f"宏观数据获取异常: {str(e)}")
+            # 设置默认值
+            result = {
+                'gdp_yoy': 0.0,
+                'cpi': 0.0,
+                'm2_yoy': 0.0,
+                'social_finance_yoy': 0.0
+            }
+
+        return result
+
+    @staticmethod
+    def get_industry_relation(industry: str) -> Dict[str, float]:
+        """获取行业相关系数"""
+        # 可以基于行业获取相关系数
+        industry_betas = {
+            '银行': 0.8,
+            '保险': 0.9,
+            '房地产': 1.2,
+            '医药生物': 0.7,
+            '计算机': 1.3,
+            '电子': 1.4,
+            # 可以添加更多行业
+        }
+
+        return {
+            'market_beta': industry_betas.get(industry, 1.0),
+            'cyclical_score': 0.5  # 周期性得分，可以进一步细化
+        }
+
+
+# 添加机器学习预测类
+class MLPredictor:
+    """机器学习预测类"""
+
+    def __init__(self):
+        self.models = {}
+        self.features = [
+            'RSI', 'DIF', 'DEA', 'MACD', 'K', 'D', 'J',
+            '收盘', '最高', '最低', '开盘', '成交量', '成交额',
+            'MA5', 'MA10', 'MA20', 'MA60'
+        ]
+
+    def prepare_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """准备特征数据"""
+        feature_df = df.copy()
+
+        try:
+            # 计算移动平均线作为特征
+            feature_df['MA5'] = feature_df['收盘'].rolling(window=5).mean()
+            feature_df['MA10'] = feature_df['收盘'].rolling(window=10).mean()
+            feature_df['MA20'] = feature_df['收盘'].rolling(window=20).mean()
+            feature_df['MA60'] = feature_df['收盘'].rolling(window=60).mean()
+
+            # 计算价格差异
+            feature_df['收盘_开盘'] = feature_df['收盘'] - feature_df['开盘']
+            feature_df['最高_最低'] = feature_df['最高'] - feature_df['最低']
+
+            # 波动率
+            feature_df['波动率'] = feature_df['收盘'].pct_change().rolling(window=10).std()
+
+            # 只计算RSI存在时的相对值
+            if 'RSI' in feature_df.columns:
+                feature_df['RSI相对'] = feature_df['RSI'] / 50 - 1
+
+            # 只计算MACD存在时的相对值
+            if 'MACD' in feature_df.columns:
+                # 检查MACD是否有足够的非NaN值
+                if feature_df['MACD'].notna().sum() > 10:
+                    feature_df['MACD相对'] = feature_df['MACD'].rolling(window=10).mean() / (
+                            feature_df['MACD'].rolling(window=10).std() + 1e-10)  # 避免除以0
+
+            # 成交量相对变化
+            feature_df['成交量_变化'] = feature_df['成交量'].pct_change()
+            feature_df['成交量_MA5'] = feature_df['成交量'].rolling(window=5).mean()
+            feature_df['成交量_相对'] = feature_df['成交量'] / (feature_df['成交量_MA5'] + 1e-10)  # 避免除以0
+
+            # 安全删除NaN值
+            for col in feature_df.columns:
+                if feature_df[col].isnull().all():
+                    print(f"警告: 列 '{col}' 全部为空值，将被移除")
+                    feature_df = feature_df.drop(columns=[col])
+                    # 如果这个特征在self.features中，也要移除
+                    if col in self.features:
+                        self.features.remove(col)
+
+            # 打印特征准备后的数据量
+            print(f"特征准备完成，数据量: {len(feature_df.dropna())}行")
+
+            return feature_df.dropna()
+        except Exception as e:
+            print(f"特征准备异常: {str(e)}")
+            # 返回原始数据框，只移除完全为空的列
+            for col in df.columns:
+                if df[col].isnull().all():
+                    df = df.drop(columns=[col])
+            return df
+
+    def train_model(self, df: pd.DataFrame, target_days: int = 5):
+        """训练模型"""
+        try:
+
+
+            # 准备特征
+            feature_df = self.prepare_features(df)
+
+            # 创建目标变量：未来N天收盘价变化百分比
+            feature_df['future_return'] = feature_df['收盘'].shift(-target_days) / feature_df['收盘'] - 1
+
+            # 删除NaN值
+            feature_df = feature_df.dropna()
+
+            # 保证有足够的数据进行训练 - 降低要求
+            if len(feature_df) < 50:  # 从100改为50
+                print(f"数据不足，无法训练模型 (仅有{len(feature_df)}行)")
+                # 设置一个简单的默认预测
+                self.models = {
+                    'default': {
+                        'model': None,
+                        'scaler': None,
+                        'mse': 0,
+                        'mean_return': feature_df['future_return'].mean() if not feature_df.empty else 0
+                    }
+                }
+                return
+
+            # 准备特征和目标
+            X = feature_df[self.features]
+            y = feature_df['future_return']
+
+            # 特征标准化
+            scaler = StandardScaler()
+            X_scaled = scaler.fit_transform(X)
+
+            # 分割训练集和测试集
+            X_train, X_test, y_train, y_test = train_test_split(X_scaled, y, test_size=0.2, shuffle=False)
+
+            # 训练多个模型
+            models = {
+                'rf': RandomForestRegressor(n_estimators=100, random_state=42),
+                'gbm': GradientBoostingRegressor(n_estimators=100, random_state=42)
+            }
+
+            for name, model in models.items():
+                model.fit(X_train, y_train)
+                y_pred = model.predict(X_test)
+                mse = mean_squared_error(y_test, y_pred)
+                print(f"模型 {name} 的MSE: {mse}")
+                self.models[name] = {
+                    'model': model,
+                    'scaler': scaler,
+                    'mse': mse
+                }
+        except Exception as e:
+            print(f"模型训练异常: {str(e)}")
+
+    def predict(self, df: pd.DataFrame, target_days: int = 5) -> Dict[str, float]:
+        """预测未来收益率"""
+        if not self.models:
+            print("模型尚未训练")
+            return {}
+
+        try:
+            # 检查是否有默认预测
+            if 'default' in self.models and self.models['default']['model'] is None:
+                # 返回默认的平均收益率
+                return {
+                    'default': self.models['default']['mean_return'] if 'mean_return' in self.models['default'] else 0}
+
+            # 准备特征
+            feature_df = self.prepare_features(df)
+
+            if feature_df.empty:
+                print("特征准备后数据为空")
+                return {'default': 0}
+
+            # 确保所有需要的特征都存在
+            available_features = [f for f in self.features if f in feature_df.columns]
+            if len(available_features) < len(self.features) / 2:  # 如果可用特征不到一半
+                print(f"可用特征不足: {len(available_features)}/{len(self.features)}")
+                return {'default': 0}
+
+            # 获取最新数据点
+            latest_data = feature_df.iloc[-1:][available_features]
+
+            predictions = {}
+
+            for name, model_info in self.models.items():
+                if name == 'default':
+                    continue
+
+                try:
+                    # 标准化数据
+                    if model_info['model'] is not None and model_info['scaler'] is not None:
+                        X_scaled = model_info['scaler'].transform(latest_data)
+                        # 预测
+                        pred = model_info['model'].predict(X_scaled)[0]
+                        predictions[name] = pred
+                except Exception as e:
+                    print(f"模型 {name} 预测异常: {str(e)}")
+
+            # 综合多个模型的预测
+            if predictions:
+                ensemble_pred = sum(predictions.values()) / len(predictions)
+                predictions['ensemble'] = ensemble_pred
+            else:
+                # 如果没有模型能成功预测，使用默认值
+                predictions['ensemble'] = 0
+
+            return predictions
+        except Exception as e:
+            print(f"预测总体异常: {str(e)}")
+            return {'ensemble': 0}
+
+
+# 添加深度学习预测类
+class DeepLearningPredictor:
+    """深度学习预测类"""
+
+    def __init__(self):
+        self.model = None
+        self.scaler = None
+        self.feature_list = None
+        self.window_size = 20  # 使用过去20天的数据预测
+
+    def create_model(self, input_shape):
+        """创建LSTM模型"""
+        try:
+
+
+            model = Sequential()
+            model.add(LSTM(50, return_sequences=True, input_shape=input_shape))
+            model.add(Dropout(0.2))
+            model.add(LSTM(50, return_sequences=False))
+            model.add(Dropout(0.2))
+            model.add(Dense(25, activation='relu'))  # 添加激活函数
+            model.add(Dense(1))
+
+            # 使用较小的学习率
+            optimizer = Adam(learning_rate=0.001)
+            model.compile(optimizer=optimizer, loss='mean_squared_error')
+
+            return model
+        except Exception as e:
+            print(f"创建深度学习模型异常: {str(e)}")
+            return None
+
+    def prepare_sequences(self, df: pd.DataFrame, features: List[str]):
+        """将数据转换为序列"""
+        try:
+
+
+            # 移除异常值
+            # 对于每个特征，移除超出3个标准差的数据点
+            clean_df = df.copy()
+            for feature in features:
+                if feature in clean_df.columns:
+                    mean = clean_df[feature].mean()
+                    std = clean_df[feature].std()
+                    clean_df = clean_df[(clean_df[feature] > mean - 3 * std) &
+                                        (clean_df[feature] < mean + 3 * std)]
+
+            # 确保没有NaN值
+            clean_df = clean_df.dropna(subset=features)
+
+            # 检查数据是否足够
+            if len(clean_df) < self.window_size + 10:
+                print(f"警告: 清洗后数据不足({len(clean_df)}行)")
+                return None, None, None
+
+            # 使用RobustScaler，对异常值不敏感
+            scaler = RobustScaler()
+            scaled_data = scaler.fit_transform(clean_df[features])
+
+            X, y = [], []
+            for i in range(self.window_size, len(scaled_data)):
+                X.append(scaled_data[i - self.window_size:i])
+                # 预测下一天的收盘价
+                y.append(scaled_data[i, features.index('收盘')])
+
+            return np.array(X), np.array(y), scaler
+        except Exception as e:
+            print(f"准备深度学习数据异常: {str(e)}")
+            return None, None, None
+
+    def train_model(self, df: pd.DataFrame):
+        """训练深度学习模型"""
+        try:
+            from sklearn.model_selection import train_test_split
+            import numpy as np
+
+            # 打印训练起点信息
+            print(f"开始训练深度学习模型，数据量: {len(df)}行")
+
+            # 确保数据充足
+            if len(df) < 200:
+                print("数据不足，无法训练深度学习模型")
+                return
+
+            # 确保所有必需特征存在
+            features = ['开盘', '最高', '最低', '收盘', '成交量']
+            optional_features = ['RSI', 'DIF', 'DEA', 'K', 'D']
+
+            # 只使用存在的可选特征
+            available_optional = [f for f in optional_features if f in df.columns]
+            final_features = features + available_optional
+
+            print(f"使用特征: {final_features}")
+
+            # 准备数据
+            X, y, scaler = self.prepare_sequences(df, final_features)
+
+            if X is None or y is None:
+                print("序列准备失败，退出训练")
+                return
+
+            print(f"准备好的序列数据形状: X={X.shape}, y={y.shape}")
+
+            # 分割数据
+            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=False)
+
+            # 创建并训练模型
+            self.model = self.create_model((X.shape[1], X.shape[2]))
+
+            if self.model is None:
+                print("模型创建失败")
+                return
+
+            # 使用较少的 epoch
+            self.model.fit(
+                X_train, y_train,
+                batch_size=min(32, len(X_train)),  # 确保batch_size不大于样本数
+                epochs=min(20, max(5, int(len(X_train) / 10))),  # 根据样本量动态调整epochs
+                validation_data=(X_test, y_test),
+                verbose=1
+            )
+
+            self.feature_list = final_features
+            self.scaler = scaler
+
+        except Exception as e:
+            print(f"训练深度学习模型异常: {str(e)}")
+            import traceback
+            print(traceback.format_exc())
+
+    def predict_next_day(self, df: pd.DataFrame) -> float:
+        """预测下一个交易日的收盘价"""
+        if self.model is None or self.scaler is None:
+            print("模型尚未训练")
+            return None
+
+        try:
+            # 确保所有必要的特征都存在
+            for feature in self.feature_list:
+                if feature not in df.columns:
+                    print(f"缺少必要特征: {feature}")
+                    return None
+
+            # 获取最近的数据
+            if len(df) < self.window_size:
+                print(f"数据不足，需要至少{self.window_size}行数据")
+                return None
+
+            recent_data = df[self.feature_list].iloc[-self.window_size:]
+
+            # 检查数据是否有NaN
+            if recent_data.isnull().values.any():
+                print("输入数据含有NaN值")
+                recent_data = recent_data.fillna(method='ffill').fillna(method='bfill')
+
+            # 标准化
+            scaled_data = self.scaler.transform(recent_data)
+
+            # 创建输入序列
+            X_test = np.array([scaled_data])
+
+            # 预测
+            scaled_prediction = self.model.predict(X_test)
+
+            # 反标准化获取实际价格
+            dummy_array = np.zeros((1, len(self.feature_list)))
+            dummy_array[0, self.feature_list.index('收盘')] = scaled_prediction[0, 0]
+            predicted_price = self.scaler.inverse_transform(dummy_array)[0, self.feature_list.index('收盘')]
+
+            # 验证预测结果是否合理
+            latest_price = df['收盘'].iloc[-1]
+            if abs(predicted_price / latest_price - 1) > 0.1:
+                print(f"预测值异常，超出当前价格10%: {predicted_price}")
+                return latest_price  # 返回最新价格作为预测值
+
+            return predicted_price
+        except Exception as e:
+            print(f"预测异常: {str(e)}")
+            return None
 
 
 class StockAnalyzer:
-    """增强版股票分析器"""
+    """股票分析类"""
 
     def __init__(self, code: str):
         self.code = code
         self.data_fetcher = DataFetcher()
         self.technical_indicators = TechnicalIndicators()
-        self.fundamental_factors = FundamentalFactors()
-        self.money_flow_factors = MoneyFlowFactors()
-        self.sentiment_factors = SentimentFactors()
-        self.industry_factors = IndustryFactors()
-        self.macro_factors = MacroFactors()
-        self.innovation_factors = InnovationFactors()
-        self.esg_factors = ESGFactors()
-        self.style_factors = StyleFactors()
-
         self.company_info = self.data_fetcher.get_company_info(code)
         self.history_data = self.data_fetcher.get_history_data(code)
         self.results = {}
         self.analysis_results = {}
+        self.risk_assessment = None
+        self.market_context = None
 
-    def run_comprehensive_analysis(self) -> Dict[str, Any]:
-        """运行综合分析"""
+    def analyze_volume(self) -> str:
+        """分析交易量"""
+        volume_data = self.history_data['成交量'].astype(float)
+        volume_mean = volume_data.mean()
+        volume_std = volume_data.std()
+
+        print(f"\n交易量分析:")
+        print(f"交易量均值: {volume_mean:.2f}")
+        print(f"交易量标准差: {volume_std:.2f}")
+
+        if volume_std < (0.5 * volume_mean):
+            print("交易量分布较为均匀，可能存在量化资金的控制。")
+            return "警惕"
+        else:
+            print("交易量分布不均匀。")
+            return "观望"
+
+    def analyze_price_fluctuation(self) -> str:
+        """分析价格波动"""
+        self.history_data['日收益率'] = self.history_data['收盘'].pct_change()
+        volatility = self.history_data['日收益率'].std()
+
+        print(f"\n价格波动分析:")
+        print(f"价格波动率（标准差）: {volatility:.2%}")
+
+        if volatility < 0.015:
+            print("价格波动较为规律，可能存在量化资金的控制。")
+            return "警惕"
+        else:
+            print("价格波动较大。")
+            return "观望"
+
+    def analyze_market_context(self) -> Dict[str, Any]:
+        """分析市场环境"""
         try:
-            print(f"\n开始分析股票 {self.code}...")
+            # 获取上证指数数据作为市场参考
+            market_data = self.data_fetcher.get_history_data('000001')
+            market_trend = market_data['收盘'].pct_change().mean()
+            market_volatility = market_data['收盘'].pct_change().std()
 
-            # 1. 技术面分析
-            print("\n执行技术面分析...")
-            self._analyze_technical_factors()
+            # 获取行业数据
+            industry = self.company_info['行业']
+            # 这里可以添加行业指数的分析
 
-            # 2. 基本面分析
-            print("\n执行基本面分析...")
-            self._analyze_fundamental_factors()
-
-            # 3. 资金流向分析
-            print("\n执行资金流向分析...")
-            self._analyze_money_flow_factors()
-
-            # 4. 情绪面分析
-            print("\n执行情绪面分析...")
-            self._analyze_sentiment_factors()
-
-            # 5. 行业分析
-            print("\n执行行业分析...")
-            self._analyze_industry_factors()
-
-            # 6. 宏观分析
-            print("\n执行宏观分析...")
-            self._analyze_macro_factors()
-
-            # 7. 创新能力分析
-            print("\n执行创新能力分析...")
-            self._analyze_innovation_factors()
-
-            # 8. ESG分析
-            print("\n执行ESG分析...")
-            self._analyze_esg_factors()
-
-            # 9. 风格分析
-            print("\n执行风格分析...")
-            self._analyze_style_factors()
-
-            # 10. 生成综合评分和建议
-            print("\n生成综合评估...")
-            self._generate_comprehensive_recommendations()
-
-            print("\n分析完成！")
-            return self.analysis_results
-
+            self.market_context = {
+                'market_trend': market_trend,
+                'market_volatility': market_volatility,
+                'industry': industry,
+            }
+            return self.market_context
         except Exception as e:
-            print(f"分析过程出现错误: {str(e)}")
+            print(f"市场环境分析失败: {str(e)}")
             return {}
 
-    def _analyze_technical_factors(self):
-        """分析技术面因子"""
+    def calculate_risk_metrics(self) -> Dict[str, float]:
+        """计算风险指标"""
+        df = self.history_data
+
+        # 计算波动率
+        volatility = df['收盘'].pct_change().std() * np.sqrt(252)
+
+        # 计算最大回撤
+        df['rolling_max'] = df['收盘'].rolling(window=252, min_periods=1).max()
+        df['drawdown'] = df['收盘'] / df['rolling_max'] - 1
+        max_drawdown = df['drawdown'].min()
+
+        # 计算流动性指标（日均成交量）
+        avg_volume = df['成交量'].mean()
+
+        self.risk_assessment = {
+            'volatility': volatility,
+            'max_drawdown': max_drawdown,
+            'avg_volume': avg_volume
+        }
+
+        return self.risk_assessment
+
+    def analyze_time_frames(self) -> Dict[str, str]:
+        """多时间维度分析"""
+        df = self.history_data
+
+        # 计算不同时间周期的趋势
+        df['yearly_ma'] = df['收盘'].rolling(window=252).mean()
+        df['monthly_ma'] = df['收盘'].rolling(window=21).mean()
+        df['weekly_ma'] = df['收盘'].rolling(window=5).mean()
+
+        latest = df.iloc[-1]
+
+        time_frames = {
+            'long_term': "√" if latest['收盘'] > latest['yearly_ma'] else "×",
+            'medium_term': "√" if latest['收盘'] > latest['monthly_ma'] else "×",
+            'short_term': "√" if latest['收盘'] > latest['weekly_ma'] else "×"
+        }
+
+        return time_frames
+
+    def calculate_weighted_score(self) -> float:
+        """计算加权评分"""
+        score_map = {'√': 1.0, '-': 0.5, '×': 0.0}
+        weighted_score = 0.0
+
+        for indicator, value in self.results.items():
+            if indicator in IndicatorWeight.WEIGHTS:
+                weighted_score += score_map[value] * IndicatorWeight.WEIGHTS[indicator]
+
+        return weighted_score
+
+    def generate_recommendations(self) -> List[str]:
+        """生成投资建议"""
+        recommendations = []
+        score = self.calculate_weighted_score()
+
+        # 基于综合得分的建议
+        if score >= 0.8:
+            recommendations.append("各项指标表现优异，适合积极建仓（0.8-1.0）")
+        elif score >= 0.6:
+            recommendations.append("指标表现良好，可以考虑逐步建仓（0.6-0.8）")
+        elif score >= 0.4:
+            recommendations.append("指标表现一般，建议观望（0.4-0.6）")
+        else:
+            recommendations.append("指标表现不佳，建议保持谨慎（0.0-0.4）")
+
+        # 基于风险评估的建议
+        if self.risk_assessment:
+            if self.risk_assessment['volatility'] > 0.4:
+                recommendations.append("波动率较高，注意控制仓位（>0.4）")
+            if self.risk_assessment['max_drawdown'] < -0.3:
+                recommendations.append("历史最大回撤较大，建议设置止损（<-0.3）")
+
+        # 基于市场环境的建议
+        if self.market_context:
+            if self.market_context['market_trend'] < -0.001:
+                recommendations.append("大盘处于下跌趋势，建议谨慎操作")
+
+        return recommendations
+
+    def run_analysis(self) -> Dict[str, Any]:
+        """运行完整分析"""
+        # 获取基础数据
         _, chip_keypoint, mean_chip = self.data_fetcher.get_chip_distribution(self.code)
         _, bbiboll_keypoint, latest_price = self.technical_indicators.calculate_bbiboll(self.history_data)
+
+        # 技术指标分析
         self.history_data, rsi_keypoint = self.technical_indicators.calculate_rsi(self.history_data)
         self.history_data, macd_keypoint = self.technical_indicators.calculate_macd(self.history_data)
         self.history_data, kdj_keypoint = self.technical_indicators.calculate_kdj(self.history_data)
         self.history_data, sar_keypoint = self.technical_indicators.calculate_sar(self.history_data)
 
-        self.results['technical'] = {
+        # 交易量和价格波动分析
+        volume_keypoint = self.analyze_volume()
+        price_keypoint = self.analyze_price_fluctuation()
+
+        # 记录所有指标结果
+        self.results = {
             'CHIP': chip_keypoint,
             'BBIBOLL': bbiboll_keypoint,
             'RSI': rsi_keypoint,
             'MACD': macd_keypoint,
             'KDJ': kdj_keypoint,
-            'SAR': sar_keypoint
+            'SAR': sar_keypoint,
+            'VOL': volume_keypoint,
+            'PRICE': price_keypoint
         }
 
-    def _analyze_fundamental_factors(self):
-        """分析基本面因子"""
-        pe_ratio, pe_key = self.fundamental_factors.calculate_pe(self.code)
-        pb_ratio, pb_key = self.fundamental_factors.calculate_pb(self.code)
-        roe, roe_key = self.fundamental_factors.calculate_roe(self.code)
-        growth, growth_key = self.fundamental_factors.calculate_growth(self.code)
-        debt, debt_key = self.fundamental_factors.calculate_debt(self.code)
-        cash_flow, cash_key = self.fundamental_factors.calculate_cash_flow(self.code)
+        # 计算风险指标
+        self.calculate_risk_metrics()
 
-        self.results['fundamental'] = {
-            'PE': pe_key,
-            'PB': pb_key,
-            'ROE': roe_key,
-            'GROWTH': growth_key,
-            'DEBT': debt_key,
-            'CASH': cash_key
-        }
+        # 分析市场环境
+        self.analyze_market_context()
 
-    def _analyze_money_flow_factors(self):
-        """分析资金流向因子"""
-        big_money, big_money_key = self.money_flow_factors.calculate_big_money_flow(self.code)
-        north_flow, north_key = self.money_flow_factors.analyze_northbound_flow(self.code)
-        inst_holding, inst_key = self.money_flow_factors.analyze_institutional_holdings(self.code)
-        margin, margin_key = self.money_flow_factors.analyze_margin_trading(self.code)
+        # 分析不同时间维度
+        time_frames = self.analyze_time_frames()
 
-        self.results['money_flow'] = {
-            'BIG_MONEY': big_money_key,
-            'NORTHBOUND': north_key,
-            'INSTITUTIONAL': inst_key,
-            'MARGIN': margin_key
-        }
+        # 生成建议
+        recommendations = self.generate_recommendations()
 
-    def _analyze_sentiment_factors(self):
-        """分析情绪因子"""
-        volatility, vol_key = self.sentiment_factors.calculate_implied_volatility(self.code)
-        forum, forum_key = self.sentiment_factors.analyze_forum_sentiment(self.code)
-        traders, traders_key = self.sentiment_factors.analyze_top_traders(self.code)
-        holders, holders_key = self.sentiment_factors.analyze_shareholder_changes(self.code)
-
-        self.results['sentiment'] = {
-            'VOLATILITY': vol_key,
-            'FORUM': forum_key,
-            'TRADERS': traders_key,
-            'HOLDERS': holders_key
-        }
-
-    def _analyze_industry_factors(self):
-        """分析行业因子"""
-        prosperity, pros_key = self.industry_factors.analyze_industry_prosperity(self.code)
-        concentration, conc_key = self.industry_factors.analyze_industry_concentration(self.code)
-        policy, policy_key = self.industry_factors.analyze_policy_sensitivity(self.code)
-        supply_chain, supply_key = self.industry_factors.analyze_supply_chain(self.code)
-
-        self.results['industry'] = {
-            'PROSPERITY': pros_key,
-            'CONCENTRATION': conc_key,
-            'POLICY': policy_key,
-            'SUPPLY_CHAIN': supply_key
-        }
-
-    def _analyze_macro_factors(self):
-        """分析宏观因子"""
-        gdp, gdp_key = self.macro_factors.analyze_gdp_impact(self.code)
-        inflation, inf_key = self.macro_factors.analyze_inflation_impact(self.code)
-        pmi, pmi_key = self.macro_factors.analyze_pmi_impact(self.code)
-        interest, int_key = self.macro_factors.analyze_interest_rate_sensitivity(self.code)
-
-        self.results['macro'] = {
-            'GDP': gdp_key,
-            'INFLATION': inf_key,
-            'PMI': pmi_key,
-            'INTEREST': int_key
-        }
-
-    def _analyze_innovation_factors(self):
-        """分析创新因子"""
-        rd, rd_key = self.innovation_factors.analyze_rd_investment(self.code)
-        patent, patent_key = self.innovation_factors.analyze_patents(self.code)
-        talent, talent_key = self.innovation_factors.analyze_talent_density(self.code)
-        business, business_key = self.innovation_factors.analyze_business_model(self.code)
-
-        self.results['innovation'] = {
-            'RD': rd_key,
-            'PATENT': patent_key,
-            'TALENT': talent_key,
-            'BUSINESS': business_key
-        }
-
-    def _analyze_esg_factors(self):
-        """分析ESG因子"""
-        env, env_key = self.esg_factors.analyze_environmental_impact(self.code)
-        social, social_key = self.esg_factors.analyze_social_responsibility(self.code)
-        governance, gov_key = self.esg_factors.analyze_governance_quality(self.code)
-
-        self.results['esg'] = {
-            'ENVIRONMENTAL': env_key,
-            'SOCIAL': social_key,
-            'GOVERNANCE': gov_key
-        }
-
-    def _analyze_style_factors(self):
-        """分析风格因子"""
-        size, size_key = self.style_factors.analyze_size_factor(self.code)
-        value, value_key = self.style_factors.analyze_value_factor(self.code)
-        momentum, momentum_key = self.style_factors.analyze_momentum_factor(self.code)
-        volatility, vol_key = self.style_factors.analyze_volatility_factor(self.code)
-
-        self.results['style'] = {
-            'SIZE': size_key,
-            'VALUE': value_key,
-            'MOMENTUM': momentum_key,
-            'VOLATILITY': vol_key
-        }
-
-    def _calculate_factor_scores(self) -> Dict[str, float]:
-        """计算各因子得分"""
-        score_map = {'√': 1.0, '-': 0.5, '×': 0.0}
-        factor_scores = {}
-
-        for factor_type, factors in self.results.items():
-            total_score = sum(score_map[value] * FactorWeight.OVERALL_WEIGHTS[factor_type.upper()]
-                              for name, value in factors.items())
-            factor_scores[factor_type] = total_score
-
-        return factor_scores
-
-    def _generate_comprehensive_recommendations(self):
-        """生成综合评分和建议"""
-        # 计算各因子得分
-        factor_scores = self._calculate_factor_scores()
-        total_score = sum(factor_scores.values())
-
-        # 生成详细分析报告
+        # 汇总分析结果
         self.analysis_results = {
             'code': self.code,
             'company_info': self.company_info,
-            'factor_scores': factor_scores,
-            'total_score': total_score,
-            'recommendations': self._generate_specific_recommendations(factor_scores),
-            'risk_assessment': self._assess_risks(factor_scores)
+            'latest_price': latest_price,
+            'mean_chip': mean_chip,
+            'indicators': self.results,
+            'risk_assessment': self.risk_assessment,
+            'market_context': self.market_context,
+            'time_frames': time_frames,
+            'weighted_score': self.calculate_weighted_score(),
+            'recommendations': recommendations
         }
 
-    def _generate_specific_recommendations(self, factor_scores: Dict[str, float]) -> List[str]:
-        """生成具体投资建议"""
-        recommendations = []
-
-        # 总体建议
-        if factor_scores['total_score'] >= 0.8:
-            recommendations.append("综合评分优异，建议积极关注")
-        elif factor_scores['total_score'] >= 0.6:
-            recommendations.append("综合表现良好，可以逐步建仓")
-        elif factor_scores['total_score'] >= 0.4:
-            recommendations.append("综合表现一般，建议观望")
-        else:
-            recommendations.append("综合表现欠佳，建议规避")
-
-        # 具体因子建议
-        low_score_factors = [factor for factor, score in factor_scores.items() if score < 0.4]
-        if low_score_factors:
-            recommendations.append(f"需要重点关注以下方面的改善：{', '.join(low_score_factors)}")
-
-        high_score_factors = [factor for factor, score in factor_scores.items() if score > 0.8]
-        if high_score_factors:
-            recommendations.append(f"具有显著优势的方面：{', '.join(high_score_factors)}")
-
-        return recommendations
-
-    def _assess_risks(self, factor_scores: Dict[str, float]) -> Dict[str, str]:
-        """评估各类风险"""
-        risk_assessment = {}
-
-        # 评估技术风险
-        if factor_scores['technical'] < 0.4:
-            risk_assessment['technical_risk'] = "高"
-        elif factor_scores['technical'] < 0.6:
-            risk_assessment['technical_risk'] = "中"
-        else:
-            risk_assessment['technical_risk'] = "低"
-
-        # 评估基本面风险
-        if factor_scores['fundamental'] < 0.4:
-            risk_assessment['fundamental_risk'] = "高"
-        elif factor_scores['fundamental'] < 0.6:
-            risk_assessment['fundamental_risk'] = "中"
-        else:
-            risk_assessment['fundamental_risk'] = "低"
-
-        # 评估市场风险
-        market_risk_score = (factor_scores['money_flow'] + factor_scores['sentiment']) / 2
-        if market_risk_score < 0.4:
-            risk_assessment['market_risk'] = "高"
-        elif market_risk_score < 0.6:
-            risk_assessment['market_risk'] = "中"
-        else:
-            risk_assessment['market_risk'] = "低"
-
-        # 评估行业风险
-        if factor_scores['industry'] < 0.4:
-            risk_assessment['industry_risk'] = "高"
-        elif factor_scores['industry'] < 0.6:
-            risk_assessment['industry_risk'] = "中"
-        else:
-            risk_assessment['industry_risk'] = "低"
-
-        return risk_assessment
+        return self.analysis_results
 
     def print_analysis_report(self):
         """打印分析报告"""
         if not self.analysis_results:
-            print("请先运行分析 (run_comprehensive_analysis)")
+            print("请先运行分析 (run_analysis)")
             return
 
-        print("\n============== 股票综合分析报告 ==============")
+        print("\n========== 股票分析报告 ==========")
         print(f"股票代码：{self.code}")
         print(f"股票名称：{self.company_info['股票简称']}")
         print(f"所属行业：{self.company_info['行业']}")
         print(f"上市时间：{self.company_info['上市时间']}")
-        print(f"机构参与度：{self.company_info['机构参与度']}")
+        print(f"发行价格：{self.company_info['发行价']}")
+        print(f"分红次数：{self.company_info['分红次数']}")
+        print(f"机构参与：{self.company_info['机构参与度']}")
+        print(f"市场成本：{self.company_info['市场成本']}")
+        print(f"\n当前价格：{self.analysis_results['latest_price']:.2f}")
+        print(f"筹码成本：{self.analysis_results['mean_chip']:.2f}")
 
-        print("\n一、各维度得分：")
-        print("-" * 40)
-        for factor_type, score in self.analysis_results['factor_scores'].items():
-            print(f"{factor_type.upper():<15}: {score:.2f}")
-        print(f"\n综合得分：{self.analysis_results['total_score']:.2f}")
+        print("------指标评级：------")
+        for indicator, value in self.results.items():
+            print(f"{indicator}: {value}")
 
-        print("\n二、风险评估：")
-        print("-" * 40)
-        for risk_type, level in self.analysis_results['risk_assessment'].items():
-            print(f"{risk_type:<20}: {level}")
+        print(f"------综合得分：{self.analysis_results['weighted_score']:.2f}------")
 
-        print("\n三、投资建议：")
-        print("-" * 40)
-        for idx, recommendation in enumerate(self.analysis_results['recommendations'], 1):
-            print(f"{idx}. {recommendation}")
+        print("\n风险评估：")
+        if self.risk_assessment:
+            print(f"波动率：{self.risk_assessment['volatility']:.2%}")
+            print(f"最大回撤：{self.risk_assessment['max_drawdown']:.2%}")
+            print(f"日均成交量：{self.risk_assessment['avg_volume']:.0f}")
 
-        print("\n四、详细指标评级：")
-        print("-" * 40)
-        for factor_type, factors in self.results.items():
-            print(f"\n{factor_type.upper()}类指标：")
-            for name, value in factors.items():
-                print(f"{name:<15}: {value}")
+        print("------投资建议：------")
+        for recommendation in self.analysis_results['recommendations']:
+            print(f"- {recommendation}")
 
-        print("\n五、技术指标详情：")
-        print("-" * 40)
-        latest_data = self.history_data.iloc[-1]
-        print(f"最新收盘价：{latest_data['收盘']:.2f}")
-        print(f"RSI指标：{latest_data['RSI']:.2f}")
-        if 'MACD' in latest_data:
-            print(f"MACD指标：{latest_data['MACD']:.4f}")
-        if 'KDJ' in latest_data:
-            print(f"KDJ指标：K={latest_data['K']:.2f}, D={latest_data['D']:.2f}, J={latest_data['J']:.2f}")
+        print("==================================")
 
-        print("\n六、估值与成长：")
-        print("-" * 40)
-        print(f"市盈率(PE)：{self.company_info.get('市盈率', '未知')}")
-        print(f"市净率(PB)：{self.company_info.get('市净率', '未知')}")
-        print(f"营收增长率：{self.company_info.get('营收增长率', '未知')}")
 
-        print("\n七、ESG评估：")
-        print("-" * 40)
-        esg_factors = self.results.get('esg', {})
-        print(f"环境(E)：{esg_factors.get('ENVIRONMENTAL', '未知')}")
-        print(f"社会(S)：{esg_factors.get('SOCIAL', '未知')}")
-        print(f"治理(G)：{esg_factors.get('GOVERNANCE', '未知')}")
+# 高级股票分析类，整合了机器学习和深度学习
+class AdvancedStockAnalyzer(StockAnalyzer):
+    """高级股票分析类"""
 
-        print("\n============== 报告结束 ==============")
+    def __init__(self, code: str):
+        super().__init__(code)
+        self.advanced_indicators = AdvancedTechnicalIndicators()
+        self.macro_fetcher = MacroDataFetcher()
+        self.ml_predictor = MLPredictor()
+        self.dl_predictor = DeepLearningPredictor()
+
+        # 扩展分析结果字典
+        self.analysis_results.update({
+            'advanced_indicators': {},
+            'macro_data': {},
+            'ml_predictions': {},
+            'dl_predictions': {}
+        })
+
+    def run_advanced_analysis(self) -> Dict[str, Any]:
+        """运行高级分析"""
+        # 首先运行基础分析
+        self.run_analysis()
+
+        # 计算高级技术指标
+        self.history_data, ichimoku_keypoint = self.advanced_indicators.calculate_ichimoku(self.history_data)
+        self.history_data, obv_keypoint = self.advanced_indicators.calculate_obv(self.history_data)
+        liquidity_metrics = self.advanced_indicators.calculate_liquidity_indicators(self.history_data)
+
+        # 添加到结果中
+        self.results.update({
+            'ICHIMOKU': ichimoku_keypoint,
+            'OBV': obv_keypoint
+        })
+
+        # 获取宏观经济数据
+        macro_data = self.macro_fetcher.get_economic_indicators()
+        industry_relation = self.macro_fetcher.get_industry_relation(self.company_info['行业'])
+
+        # 训练模型并获取预测
+        try:
+            self.ml_predictor.train_model(self.history_data)
+            ml_predictions = self.ml_predictor.predict(self.history_data)
+
+            # 只在数据足够的情况下训练深度学习模型
+            if len(self.history_data) > 200:
+                self.dl_predictor.train_model(self.history_data)
+                dl_prediction = self.dl_predictor.predict_next_day(self.history_data)
+            else:
+                dl_prediction = None
+        except Exception as e:
+            print(f"模型训练异常: {str(e)}")
+            ml_predictions = {}
+            dl_prediction = None
+
+        # 更新分析结果
+        self.analysis_results.update({
+            'advanced_indicators': {
+                'ICHIMOKU': ichimoku_keypoint,
+                'OBV': obv_keypoint,
+                'liquidity': liquidity_metrics
+            },
+            'macro_data': {
+                'economic': macro_data,
+                'industry': industry_relation
+            },
+            'ml_predictions': ml_predictions,
+            'dl_predictions': {'next_day': dl_prediction}
+        })
+
+        # 更新投资建议，考虑新增的指标
+        self.update_recommendations()
+
+        return self.analysis_results
+
+    def update_recommendations(self):
+        """更新投资建议，考虑高级指标和预测"""
+        recommendations = self.analysis_results['recommendations'].copy()
+
+        # 添加基于机器学习预测的建议
+        ml_preds = self.analysis_results['ml_predictions']
+        if ml_preds and 'ensemble' in ml_preds:
+            pred_return = ml_preds['ensemble']
+            if pred_return > 0.05:  # 预测5天后涨幅超过5%
+                recommendations.append(f"机器学习模型预测5天后涨幅 {pred_return:.2%}，建议积极关注")
+            elif pred_return < -0.03:  # 预测5天后跌幅超过3%
+                recommendations.append(f"机器学习模型预测5天后跌幅 {abs(pred_return):.2%}，建议谨慎操作")
+
+        # 添加基于深度学习的建议
+        dl_pred = self.analysis_results['dl_predictions'].get('next_day')
+        if dl_pred:
+            current_price = self.history_data['收盘'].iloc[-1]
+            change_rate = (dl_pred / current_price - 1)
+            if change_rate > 0.03:  # 预测涨幅超过3%
+                recommendations.append(f"深度学习模型预测明日涨幅 {change_rate:.2%}，建议关注")
+            elif change_rate < -0.02:  # 预测跌幅超过2%
+                recommendations.append(f"深度学习模型预测明日跌幅 {abs(change_rate):.2%}，建议注意风险")
+
+        # 添加基于宏观数据的建议
+        macro_data = self.analysis_results['macro_data']
+        if 'economic' in macro_data and 'gdp_yoy' in macro_data['economic']:
+            gdp_yoy = macro_data['economic']['gdp_yoy']
+            if gdp_yoy < 5:  # GDP同比增长低于5%
+                recommendations.append("宏观经济增速放缓，建议关注防御性板块")
+
+        # 更新推荐列表
+        self.analysis_results['recommendations'] = recommendations
+
+    def print_advanced_report(self):
+        """打印高级分析报告"""
+        # 先打印基础报告
+        self.print_analysis_report()
+
+        print("\n========== 高级分析报告 ==========")
+
+        # 打印高级技术指标
+        print("高级技术指标：")
+        adv_indicators = self.analysis_results.get('advanced_indicators', {})
+        for k, v in adv_indicators.items():
+            if k != 'liquidity':
+                print(f"{k}: {v}")
+
+        # 打印流动性指标
+        if 'liquidity' in adv_indicators:
+            print("\n流动性分析：")
+            for k, v in adv_indicators['liquidity'].items():
+                print(f"{k}: {v:.4f}")
+
+        # 打印宏观数据
+        print("\n宏观经济环境：")
+        macro_data = self.analysis_results.get('macro_data', {})
+        if 'economic' in macro_data:
+            for k, v in macro_data['economic'].items():
+                print(f"{k}: {v}")
+
+        # 打印行业相关性
+        if 'industry' in macro_data:
+            print("\n行业特性：")
+            for k, v in macro_data['industry'].items():
+                print(f"{k}: {v:.2f}")
+
+        # 打印机器学习预测
+        print("\n机器学习预测（5天后收益率）：")
+        ml_preds = self.analysis_results.get('ml_predictions', {})
+        for model, pred in ml_preds.items():
+            print(f"{model}: {pred:.2%}")
+
+        # 打印深度学习预测
+        dl_pred = self.analysis_results.get('dl_predictions', {}).get('next_day')
+        if dl_pred:
+            current_price = self.history_data['收盘'].iloc[-1]
+            print(f"\n深度学习预测下一交易日价格: {dl_pred:.2f} (变化率: {(dl_pred / current_price - 1):.2%})")
+
+        print("==================================")
 
 
 def main():
     """主程序"""
-    print("欢迎使用增强版股票分析系统")
-    print("本系统整合了技术面、基本面、资金面、情绪面等多维度分析")
-    print("支持ESG分析、创新能力评估、行业分析等深度研究")
-
+    print("欢迎使用高级股票分析系统")
     while True:
-        print("\n" + "=" * 50)
-        stock_code = input("\n请输入6位股票代码（输入q退出）: ")
-
+        stock_code = input("请输入6位股票代码（输入q退出）: ")
         if stock_code.lower() == 'q':
-            print("\n感谢使用股票分析系统！")
             break
 
         try:
-            # 创建分析器实例
-            analyzer = StockAnalyzer(stock_code)
+            # 询问是否使用高级分析
+            use_advanced = input("是否使用高级分析模式？(y/n): ").lower() == 'y'
 
-            # 运行综合分析
-            print("\n开始进行多维度分析，请稍候...")
-            analyzer.run_comprehensive_analysis()
-
-            # 打印分析报告
-            analyzer.print_analysis_report()
-
-            # 询问是否需要保存报告
-            save_report = input("\n是否需要保存分析报告？(y/n): ")
-            if save_report.lower() == 'y':
-                file_name = f"stock_analysis_{stock_code}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
-                try:
-                    with open(file_name, 'w', encoding='utf-8') as f:
-                        # 重定向标准输出到文件
-                        import sys
-                        original_stdout = sys.stdout
-                        sys.stdout = f
-                        analyzer.print_analysis_report()
-                        sys.stdout = original_stdout
-                    print(f"\n报告已保存至: {file_name}")
-                except Exception as e:
-                    print(f"保存报告时出现错误: {str(e)}")
-
+            if use_advanced:
+                analyzer = AdvancedStockAnalyzer(stock_code)
+                analyzer.run_advanced_analysis()
+                analyzer.print_advanced_report()
+            else:
+                analyzer = StockAnalyzer(stock_code)
+                analyzer.run_analysis()
+                analyzer.print_analysis_report()
         except Exception as e:
-            print(f"\n分析过程出现错误: {str(e)}")
-            print("请检查股票代码是否正确，或稍后重试")
+            print(f"分析过程出现错误: {str(e)}")
             continue
 
-        # 询问是否继续分析其他股票
-        continue_analysis = input("\n是否继续分析其他股票？(y/n): ")
-        if continue_analysis.lower() != 'y':
-            print("\n感谢使用股票分析系统！")
-            break
+    print("感谢使用高级股票分析系统！")
 
 
 if __name__ == "__main__":
     main()
+
